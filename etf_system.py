@@ -5,8 +5,9 @@ ETF Analysis and Backtest System - Main Entry
 import os, sys, argparse
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from etf_data import ETFDataFetcher, ETFCodeMapper
+from etf_data import ETFDataFetcher, ETFCodeMapper, _WIDE_BASIS_PREFIXES, _get_storage
 from etf_factors import ETFFactorCalculator
 from etf_backtest import ETFBacktestEngine, BacktestConfig
 from etf_advisor import get_investment_advice, format_advice
@@ -37,18 +38,22 @@ class ETFAnalysisSystem:
         return self.backtest_engine.run(df, strategy, params)
 
     def get_investment_advice(self, etf_code: str, strategy: str, backtest_result, days: int = 60):
-        etf_name = ETFCodeMapper.get_etf_name(etf_code) or "未知ETF"
+        etf_name = self.data_fetcher.mapper.get_etf_name(etf_code) or "未知ETF"
         current_quote = self.data_fetcher.get_realtime_quote(etf_code)
         current_price = current_quote['latest_price'] if current_quote else 0
         df = self.data_fetcher.get_historical_data(etf_code, days)
         factors = {}
-        if df is not None and len(df) > 20:
+        if df is not None and len(df) > 50:
             try:
-                factors['rsi'] = self.factor_calculator.calculate(df, 'rsi', period=14).iloc[-1]
-                factors['trend'] = self.factor_calculator.calculate(df, 'trend_strength', window=20).iloc[-1]
+                factors['rsi'] = self.factor_calculator.calculate(df, 'rsi', period=21).iloc[-1]
+                factors['trend'] = self.factor_calculator.calculate(df, 'trend_strength', window=21).iloc[-1]
+                factors['ma_alignment'] = self.factor_calculator.calculate(df, 'ma_alignment', periods=[9, 21, 50]).iloc[-1]
+                adx_df = self.factor_calculator.calculate(df, 'adx', period=14)
+                factors['adx'] = adx_df['adx'].iloc[-1]
+                st_df = self.factor_calculator.calculate(df, 'supertrend', period=10, multiplier=3.0)
+                factors['supertrend_trend'] = st_df['trend'].iloc[-1]
             except: pass
         return get_investment_advice(etf_code, etf_name, backtest_result, current_price, factors)
-
 
     def full_analysis(self, etf_code: str, strategy: str = "rsi", params: dict = None):
         params = params or {}
@@ -70,18 +75,176 @@ class ETFAnalysisSystem:
         return result
 
 
+# ── 批量下载 / 增量更新 ───────────────────────────────────────────────────────
+
+def _download_one(code: str, days: int, fetcher: ETFDataFetcher) -> tuple:
+    """单只 ETF 下载任务，返回 (code, ok, rows)。"""
+    try:
+        df = fetcher.get_historical_data(code, days=days, use_cache=True)
+        rows = len(df) if df is not None else 0
+        return code, True, rows
+    except Exception as e:
+        return code, False, str(e)
+
+
+def cmd_download(days: int, workers: int):
+    """批量下载所有宽基 ETF 历史数据到本地 SQLite。"""
+    try:
+        from tqdm import tqdm
+    except ImportError:
+        tqdm = None
+
+    print("正在从 akshare 获取全量 ETF 列表...")
+    ETFCodeMapper.load_from_akshare()
+    codes = ETFCodeMapper.get_wide_basis_codes()
+    print(f"宽基 ETF 共 {len(codes)} 只，开始下载 {days} 日历史数据（并发 {workers}）...\n")
+
+    fetcher = ETFDataFetcher()
+    ok_count = fail_count = total_rows = 0
+    failed_codes = []
+
+    bar = tqdm(total=len(codes), unit="只") if tqdm else None
+
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = {pool.submit(_download_one, c, days, fetcher): c for c in codes}
+        for future in as_completed(futures):
+            code, ok, detail = future.result()
+            if ok:
+                ok_count += 1
+                total_rows += detail
+            else:
+                fail_count += 1
+                failed_codes.append(code)
+            if bar:
+                bar.set_postfix(ok=ok_count, fail=fail_count)
+                bar.update(1)
+            else:
+                done = ok_count + fail_count
+                if done % 50 == 0 or done == len(codes):
+                    print(f"  进度 {done}/{len(codes)}  成功 {ok_count}  失败 {fail_count}")
+
+    if bar:
+        bar.close()
+
+    print(f"\n下载完成：成功 {ok_count} 只，失败 {fail_count} 只，共写入 {total_rows:,} 条数据")
+    if failed_codes:
+        print(f"失败代码：{', '.join(failed_codes)}")
+
+
+def cmd_update(workers: int):
+    """增量更新本地已缓存 ETF 的最新数据（只补 last_date+1 到今天的缺口）。"""
+    try:
+        from tqdm import tqdm
+    except ImportError:
+        tqdm = None
+
+    storage = _get_storage()
+    codes = storage.get_cached_codes()
+    if not codes:
+        print("本地无缓存数据，请先运行 --download 下载历史数据。")
+        return
+
+    print(f"本地已缓存 {len(codes)} 只 ETF，开始增量更新（并发 {workers}）...\n")
+
+    fetcher = ETFDataFetcher()
+    ok_count = fail_count = new_rows = 0
+    failed_codes = []
+
+    # 更新时只需拉近 30 日，缓存逻辑会自动计算实际缺口
+    bar = tqdm(total=len(codes), unit="只") if tqdm else None
+
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = {pool.submit(_download_one, c, 30, fetcher): c for c in codes}
+        for future in as_completed(futures):
+            code, ok, detail = future.result()
+            if ok:
+                ok_count += 1
+                new_rows += detail if isinstance(detail, int) else 0
+            else:
+                fail_count += 1
+                failed_codes.append(code)
+            if bar:
+                bar.set_postfix(ok=ok_count, fail=fail_count)
+                bar.update(1)
+            else:
+                done = ok_count + fail_count
+                if done % 50 == 0 or done == len(codes):
+                    print(f"  进度 {done}/{len(codes)}  成功 {ok_count}  失败 {fail_count}")
+
+    if bar:
+        bar.close()
+
+    print(f"\n增量更新完成：成功 {ok_count} 只，失败 {fail_count} 只")
+    if failed_codes:
+        print(f"失败代码：{', '.join(failed_codes)}")
+
+
+def cmd_cache_stats():
+    """显示本地缓存统计信息。"""
+    storage = _get_storage()
+    df = storage.get_cache_stats()
+    if df.empty:
+        print("本地暂无缓存数据，请先运行 --download。")
+        return
+
+    total_rows = df["rows"].sum()
+    print(f"\n本地缓存统计（共 {len(df)} 只 ETF，{total_rows:,} 条记录）")
+    print(f"{'代码':<10}{'名称':<20}{'条数':>6}  {'最早日期':<12}{'最新日期':<12}{'最后更新'}")
+    print("-" * 80)
+    for _, row in df.iterrows():
+        print(f"{row['code']:<10}{(row['name'] or ''):<20}{int(row['rows'] or 0):>6}  "
+              f"{str(row['first_date'] or ''):<12}{str(row['last_date'] or ''):<12}"
+              f"{str(row['updated_at'] or '')[:16]}")
+
+
+# ── CLI 入口 ──────────────────────────────────────────────────────────────────
+
 def main():
     parser = argparse.ArgumentParser(description="A股ETF分析和回测系统")
     parser.add_argument('--code', '-c', type=str, help='ETF代码')
-    parser.add_argument('--strategy', '-s', type=str, default='rsi', choices=['rsi', 'macd', 'ma_cross', 'bollinger'])
+    parser.add_argument('--strategy', '-s', type=str, default='rsi',
+                        choices=['rsi', 'macd', 'ma_cross', 'bollinger'])
     parser.add_argument('--list', '-l', action='store_true', help='列出所有ETF')
     parser.add_argument('--quote', '-q', action='store_true', help='获取实时行情')
-    parser.add_argument('--days', type=int, default=500, help='回测天数')
+    parser.add_argument('--days', type=int, default=500,
+                        help='回测/下载天数（默认500，推荐1500）')
+    parser.add_argument('--refresh', action='store_true',
+                        help='从akshare刷新ETF列表并显示统计')
+    parser.add_argument('--download', action='store_true',
+                        help='批量下载所有宽基ETF历史数据到本地SQLite')
+    parser.add_argument('--update', action='store_true',
+                        help='增量更新本地已缓存ETF的最新数据')
+    parser.add_argument('--cache-stats', action='store_true',
+                        help='查看本地缓存统计信息')
+    parser.add_argument('--workers', type=int, default=5,
+                        help='批量下载/更新并发数（默认5，建议不超过8）')
     args = parser.parse_args()
+
+    # --download 和 --update 不能同时使用
+    if args.download and args.update:
+        print("错误：--download 和 --update 不能同时使用")
+        sys.exit(1)
 
     system = ETFAnalysisSystem()
 
-    if args.list:
+    if args.download:
+        cmd_download(days=args.days, workers=args.workers)
+
+    elif args.update:
+        cmd_update(workers=args.workers)
+
+    elif args.cache_stats:
+        cmd_cache_stats()
+
+    elif args.refresh:
+        n = ETFCodeMapper.load_from_akshare()
+        wide = ETFCodeMapper.get_wide_basis_codes()
+        industry = ETFCodeMapper.get_industry_codes()
+        print(f"\nakshare ETF总量: {n} 只")
+        print(f"  宽基（{_WIDE_BASIS_PREFIXES}前缀）: {len(wide)} 只")
+        print(f"  其他: {len(industry)} 只")
+
+    elif args.list:
         etfs = system.list_all_etfs()
         print(f"\nETF列表 ({len(etfs)}只)")
         for e in etfs:
@@ -94,6 +257,7 @@ def main():
 
     elif args.code:
         system.full_analysis(args.code, args.strategy)
+
     else:
         parser.print_help()
 

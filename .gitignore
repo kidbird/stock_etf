@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+*.pyo
+etf_cache.db
+.DS_Store

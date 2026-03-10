@@ -141,25 +141,31 @@ class ETFBacktestEngine:
 
         equity = equity_curve['equity']
         total_return = (equity.iloc[-1] - equity.iloc[0]) / equity.iloc[0]
+        n_days = len(equity)
+        annualized_return = (1 + total_return) ** (252 / n_days) - 1 if n_days > 0 else 0.0
         daily_returns = equity.pct_change().dropna()
         volatility = daily_returns.std() * np.sqrt(252)
-        sharpe_ratio = (total_return * 252 - self.config.risk_free_rate) / volatility if volatility > 0 else 0
+        sharpe_ratio = (daily_returns.mean() * 252 - self.config.risk_free_rate) / volatility if volatility > 0 else 0
 
         rolling_max = equity.expanding().max()
         max_drawdown = ((equity - rolling_max) / rolling_max).min()
-
 
         winning_trades = [t for t in trades if t.get('action') == 'SELL' and t.get('profit', 0) > 0]
         losing_trades = [t for t in trades if t.get('action') == 'SELL' and t.get('profit', 0) <= 0]
         total_trades = len(winning_trades) + len(losing_trades)
         win_rate = len(winning_trades) / total_trades if total_trades > 0 else 0
 
+        total_profit = sum(t['profit'] for t in winning_trades)
+        total_loss = abs(sum(t['profit'] for t in losing_trades))
+        profit_factor = total_profit / total_loss if total_loss > 0 else float('inf') if total_profit > 0 else 0.0
+
         return BacktestResult(
             total_return=total_return,
-            annualized_return=total_return,
+            annualized_return=annualized_return,
             sharpe_ratio=sharpe_ratio,
             max_drawdown=max_drawdown,
             win_rate=win_rate,
+            profit_factor=profit_factor,
             total_trades=total_trades,
             winning_trades=len(winning_trades),
             losing_trades=len(losing_trades),
