@@ -95,6 +95,9 @@ python3 etf_system.py --code 510300
 
 # 指定策略
 python3 etf_system.py --code 510300 --strategy macd
+python3 etf_system.py --code 510300 --strategy trend_filter_macd
+python3 etf_system.py --code 510300 --strategy supertrend_follow
+python3 etf_system.py --code 510300 --strategy donchian_breakout
 python3 etf_system.py --code 510300 --strategy ma_cross
 python3 etf_system.py --code 510300 --strategy bollinger
 
@@ -149,6 +152,9 @@ print(f"均线排列得分: {ma_align.iloc[-1]:.2f}")  # -1(空头) ~ +1(多头)
 |--------|---------|---------|---------|
 | `rsi` | RSI < 超卖阈值买入，> 超买阈值卖出 | period=21, oversold=30, overbought=70 | 震荡 + 趋势 |
 | `macd` | MACD 线上穿信号线买入，下穿卖出 | fast=12, slow=26, signal=9 | 趋势行情 |
+| `trend_filter_macd` | 仅在 ADX + 均线排列确认趋势后，MACD 金叉买入/死叉卖出 | fast=12, slow=26, signal=9, adx_min=20, ma_alignment_min=0.3 | 中线趋势行情 |
+| `supertrend_follow` | Supertrend 翻多买入，翻空或动量转弱卖出 | period=10, multiplier=3.0, roc_period=20, roc_min=0 | 趋势延续行情 |
+| `donchian_breakout` | 突破 Donchian 上轨买入，跌回中轨/下轨卖出 | window=20, adx_period=14, adx_min=20 | 突破启动行情 |
 | `ma_cross` | 短均线上穿长均线买入，下穿卖出 | short_period=9, long_period=21 | 趋势行情 |
 | `bollinger` | 价格触及下轨买入，触及上轨卖出 | window=20, num_std=2 | 震荡行情 |
 
@@ -167,7 +173,39 @@ result = system.run_backtest("510300", "ma_cross", {
     "short_period": 9,
     "long_period": 21,
 }, days=1500)
+
+# 趋势过滤 MACD：只有趋势成立时才允许 MACD 入场
+result = system.run_backtest("510300", "trend_filter_macd", {
+    "fast": 12,
+    "slow": 26,
+    "signal": 9,
+    "adx_min": 20,
+    "ma_alignment_min": 0.3,
+}, days=1500)
+
+# Supertrend 趋势跟随：适合有持续趋势的宽基 ETF
+result = system.run_backtest("510300", "supertrend_follow", {
+    "period": 10,
+    "multiplier": 3.0,
+    "roc_period": 20,
+    "roc_min": 0,
+}, days=1500)
+
+# Donchian 通道突破：适合中期突破启动
+result = system.run_backtest("510300", "donchian_breakout", {
+    "window": 20,
+    "adx_period": 14,
+    "adx_min": 20,
+}, days=1500)
 ```
+
+**新策略使用建议：**
+
+| 策略名 | 适合 ETF | 建议观察点 | 不适合场景 |
+|--------|----------|-----------|-----------|
+| `trend_filter_macd` | 沪深300、中证500、红利等宽基 | ADX 持续 > 20，均线排列转多 | 横盘震荡、频繁假突破 |
+| `supertrend_follow` | 有持续上行趋势的宽基/行业 ETF | 趋势翻多后能否继续站稳 | 高位震荡、急涨急跌切换 |
+| `donchian_breakout` | 中期突破型 ETF | 是否放量突破近 20 日高点 | 无趋势、低波动箱体 |
 
 ---
 

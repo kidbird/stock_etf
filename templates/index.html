@@ -70,6 +70,12 @@ select, .btn {
   background: var(--bg3); border: 1px solid var(--border); color: var(--text);
   font-size: 14px; cursor: pointer; outline: none;
 }
+input.param-input {
+  width: 100%; padding: 8px 10px; border-radius: var(--radius);
+  background: var(--bg3); border: 1px solid var(--border); color: var(--text);
+  font-size: 13px; outline: none;
+}
+input.param-input:focus { border-color: var(--blue); }
 select:focus { border-color: var(--blue); }
 .btn-primary {
   background: var(--blue); color: #fff; border-color: var(--blue);
@@ -79,6 +85,10 @@ select:focus { border-color: var(--blue); }
 .btn-primary:disabled { opacity: .5; cursor: not-allowed; }
 
 .divider { border: none; border-top: 1px solid var(--border); margin: 4px 0; }
+.param-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.param-field { display: flex; flex-direction: column; gap: 4px; }
+.param-field label { color: var(--text2); font-size: 11px; }
+.param-help { color: var(--text2); font-size: 11px; line-height: 1.4; margin-top: 6px; }
 
 /* 建议卡片 */
 .advice-card {
@@ -126,6 +136,70 @@ select:focus { border-color: var(--blue); }
 .metric-card .m-label { color: var(--text2); font-size: 11px; }
 .metric-card .m-val   { font-size: 18px; font-weight: 700; margin-top: 4px; }
 .metric-card .m-sub   { color: var(--text2); font-size: 11px; margin-top: 2px; }
+.regime-card {
+  background: var(--bg2); border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 14px; display: flex; flex-direction: column; gap: 8px;
+}
+.regime-grid { display: grid; grid-template-columns: 1.2fr 1fr; gap: 10px; }
+.regime-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+.regime-title { font-size: 13px; color: var(--text2); }
+.regime-value { font-size: 20px; font-weight: 700; }
+.regime-reasons { color: var(--text2); font-size: 12px; line-height: 1.5; }
+.fit-card {
+  background: var(--bg3); border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 12px; display: flex; flex-direction: column; gap: 6px;
+}
+.fit-title { font-size: 12px; color: var(--text2); }
+.fit-value { font-size: 18px; font-weight: 700; }
+.fit-reason { font-size: 12px; color: var(--text2); line-height: 1.5; }
+.relative-section {
+  background: var(--bg2); border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 14px; display: flex; flex-direction: column; gap: 12px;
+}
+.relative-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+.window-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+.relative-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+.relative-card {
+  background: var(--bg3); border: 1px solid var(--border); border-radius: var(--radius); padding: 12px;
+}
+.relative-name { color: var(--text2); font-size: 12px; }
+.relative-status { font-size: 18px; font-weight: 700; margin-top: 4px; }
+.relative-sub { color: var(--text2); font-size: 11px; line-height: 1.5; margin-top: 6px; }
+.rotation-card {
+  background: var(--bg3); border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 12px; display: flex; flex-direction: column; gap: 6px; min-width: 220px;
+}
+.rotation-rank-section {
+  background: var(--bg2); border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 14px; display: flex; flex-direction: column; gap: 12px;
+}
+.rotation-toolbar {
+  display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap;
+}
+.rotation-controls {
+  display: flex; gap: 10px; align-items: center; flex-wrap: wrap;
+}
+.rotation-controls select,
+.rotation-controls input {
+  width: auto; min-width: 92px;
+}
+.rotation-table-wrap {
+  overflow-x: auto;
+}
+.rotation-table .phase-cell,
+.rotation-table .action-cell {
+  font-weight: 700;
+}
+.rotation-empty {
+  padding: 18px 0; color: var(--text2); text-align: center;
+}
+.mini-chart-wrap { position: relative; height: 220px; }
+.window-switch { display: flex; gap: 8px; flex-wrap: wrap; }
+.window-chip {
+  padding: 4px 10px; border-radius: 999px; border: 1px solid var(--border);
+  background: transparent; color: var(--text2); font-size: 12px; cursor: pointer;
+}
+.window-chip.active { background: var(--blue); color: #fff; border-color: var(--blue); }
 
 /* 图表区 */
 .chart-section {
@@ -184,6 +258,8 @@ tr:hover td { background: var(--bg3); }
 @media (max-width: 900px) {
   .layout { grid-template-columns: 1fr; }
   .metric-row { grid-template-columns: repeat(3, 1fr); }
+  .window-grid { grid-template-columns: 1fr; }
+  .relative-grid { grid-template-columns: 1fr; }
   .factor-grid { grid-template-columns: repeat(3, 1fr); }
 }
 </style>
@@ -221,10 +297,18 @@ tr:hover td { background: var(--bg3); }
       <div class="label">回测策略</div>
       <select id="strategySelect">
         <option value="macd">MACD 金叉死叉</option>
+        <option value="trend_filter_macd">趋势过滤 MACD</option>
+        <option value="supertrend_follow">Supertrend 趋势跟随</option>
+        <option value="donchian_breakout">Donchian 通道突破</option>
         <option value="ma_cross">均线交叉 (9/21)</option>
         <option value="rsi">RSI 超买超卖</option>
         <option value="bollinger">布林带突破</option>
       </select>
+    </div>
+
+    <div>
+      <div class="label">策略参数</div>
+      <div id="strategyParams"></div>
     </div>
 
     <div>
@@ -263,12 +347,78 @@ tr:hover td { background: var(--bg3); }
 let currentCode = null;
 let priceChart = null;
 let equityChart = null;
+let relativeChart = null;
 let lastData = null;
+let relativeWindow = 120;
+let rotationRankCategory = 'industry';
+let rotationRankWindow = 60;
+let rotationRankTop = 20;
+const STRATEGY_CONFIG = {
+  macd: {
+    params: [
+      { key:'fast', label:'快线', value:12, type:'number', step:'1' },
+      { key:'slow', label:'慢线', value:26, type:'number', step:'1' },
+      { key:'signal', label:'信号线', value:9, type:'number', step:'1' },
+    ],
+    help: '经典趋势跟随，适合已有方向的宽基 ETF。',
+  },
+  trend_filter_macd: {
+    params: [
+      { key:'fast', label:'快线', value:12, type:'number', step:'1' },
+      { key:'slow', label:'慢线', value:26, type:'number', step:'1' },
+      { key:'signal', label:'信号线', value:9, type:'number', step:'1' },
+      { key:'adx_period', label:'ADX 周期', value:14, type:'number', step:'1' },
+      { key:'adx_min', label:'ADX 阈值', value:20, type:'number', step:'0.1' },
+      { key:'ma_alignment_min', label:'均线阈值', value:0.3, type:'number', step:'0.1' },
+    ],
+    help: '先确认趋势，再允许 MACD 入场，适合过滤震荡行情。',
+  },
+  supertrend_follow: {
+    params: [
+      { key:'period', label:'周期', value:10, type:'number', step:'1' },
+      { key:'multiplier', label:'ATR 倍数', value:3.0, type:'number', step:'0.1' },
+      { key:'roc_period', label:'ROC 周期', value:20, type:'number', step:'1' },
+      { key:'roc_min', label:'ROC 下限', value:0, type:'number', step:'0.1' },
+    ],
+    help: '趋势翻多才跟随，并用动量过滤弱势行情。',
+  },
+  donchian_breakout: {
+    params: [
+      { key:'window', label:'通道周期', value:20, type:'number', step:'1' },
+      { key:'adx_period', label:'ADX 周期', value:14, type:'number', step:'1' },
+      { key:'adx_min', label:'ADX 阈值', value:20, type:'number', step:'0.1' },
+    ],
+    help: '适合中期突破启动，阈值越高越偏保守。',
+  },
+  ma_cross: {
+    params: [
+      { key:'short_period', label:'短均线', value:9, type:'number', step:'1' },
+      { key:'long_period', label:'长均线', value:21, type:'number', step:'1' },
+    ],
+    help: '简单趋势跟随，震荡区间容易反复交易。',
+  },
+  rsi: {
+    params: [
+      { key:'period', label:'RSI 周期', value:21, type:'number', step:'1' },
+      { key:'oversold', label:'超卖线', value:30, type:'number', step:'0.1' },
+      { key:'overbought', label:'超买线', value:70, type:'number', step:'0.1' },
+    ],
+    help: '偏均值回归，适合震荡和回调买入。',
+  },
+  bollinger: {
+    params: [
+      { key:'window', label:'窗口', value:20, type:'number', step:'1' },
+      { key:'num_std', label:'标准差', value:2, type:'number', step:'0.1' },
+    ],
+    help: '区间震荡更有效，单边趋势中容易逆势。',
+  },
+};
 
 // ── 搜索逻辑 ──────────────────────────────────────────────────────────────────
 const searchInput = document.getElementById('searchInput');
 const searchResults = document.getElementById('searchResults');
 const categoryFilter = document.getElementById('categoryFilter');
+const strategySelect = document.getElementById('strategySelect');
 
 let searchTimer = null;
 searchInput.addEventListener('input', () => {
@@ -280,6 +430,7 @@ categoryFilter.addEventListener('change', () => { if (searchInput.value) doSearc
 document.addEventListener('click', e => {
   if (!e.target.closest('.search-wrap')) searchResults.classList.remove('show');
 });
+strategySelect.addEventListener('change', renderStrategyParams);
 
 async function doSearch() {
   const q = searchInput.value.trim();
@@ -299,7 +450,7 @@ function renderSearchResults(etfs) {
       `<div class="search-item" onclick="selectETF('${e.code}','${e.name}')">
         <span class="code">${e.code}</span>
         <span class="name">${e.name}</span>
-        <span class="${e.wide ? 'badge-wide' : 'badge-ind'}">${e.wide ? '宽基' : '行业'}</span>
+        <span class="${e.wide ? 'badge-wide' : 'badge-ind'}">${e.category_label || (e.wide ? '宽基' : '行业')}</span>
       </div>`
     ).join('');
   }
@@ -315,21 +466,155 @@ function selectETF(code, name) {
   document.getElementById('runBtn').disabled = false;
 }
 
+function renderRotationRankShell() {
+  return `
+    <div class="rotation-rank-section">
+      <div class="rotation-toolbar">
+        <div>
+          <div class="regime-title">行业轮动榜</div>
+          <div class="muted" style="font-size:12px;margin-top:2px">按轮动阶段优先，再按所选窗口平均超额收益排序</div>
+        </div>
+        <div class="rotation-controls">
+          <select id="rotationCategory">
+            <option value="industry">行业 ETF</option>
+            <option value="wide_basis">宽基 ETF</option>
+            <option value="all">全部 ETF</option>
+          </select>
+          <select id="rotationWindow">
+            <option value="20">20 日</option>
+            <option value="60" selected>60 日</option>
+            <option value="120">120 日</option>
+            <option value="250">250 日</option>
+          </select>
+          <input id="rotationTop" class="param-input" type="number" min="1" max="100" value="20">
+          <button class="btn" id="rotationRefreshBtn" type="button">刷新榜单</button>
+        </div>
+      </div>
+      <div id="rotationRankContent" class="rotation-empty">正在加载轮动榜…</div>
+    </div>
+  `;
+}
+
+function bindRotationRankControls() {
+  const categoryEl = document.getElementById('rotationCategory');
+  const windowEl = document.getElementById('rotationWindow');
+  const topEl = document.getElementById('rotationTop');
+  const refreshBtn = document.getElementById('rotationRefreshBtn');
+  if (!categoryEl || !windowEl || !topEl || !refreshBtn) return;
+
+  categoryEl.value = rotationRankCategory;
+  windowEl.value = String(rotationRankWindow);
+  topEl.value = String(rotationRankTop);
+
+  categoryEl.onchange = () => { rotationRankCategory = categoryEl.value; };
+  windowEl.onchange = () => { rotationRankWindow = Number(windowEl.value); };
+  topEl.onchange = () => {
+    const next = Number(topEl.value);
+    rotationRankTop = Number.isFinite(next) ? Math.max(1, Math.min(100, next)) : 20;
+    topEl.value = String(rotationRankTop);
+  };
+  refreshBtn.onclick = () => {
+    rotationRankCategory = categoryEl.value;
+    rotationRankWindow = Number(windowEl.value);
+    rotationRankTop = Math.max(1, Math.min(100, Number(topEl.value) || 20));
+    topEl.value = String(rotationRankTop);
+    loadRotationRank();
+  };
+}
+
+async function loadRotationRank() {
+  const content = document.getElementById('rotationRankContent');
+  if (!content) return;
+  content.innerHTML = '<div class="rotation-empty">正在加载轮动榜…</div>';
+  try {
+    const query = new URLSearchParams({
+      category: rotationRankCategory,
+      window: String(rotationRankWindow),
+      top: String(rotationRankTop),
+    });
+    const res = await fetch(`/api/rotation-rank?${query.toString()}`);
+    const data = await res.json();
+    if (data.error) {
+      content.innerHTML = `<div class="rotation-empty" style="color:var(--red)">${data.error}</div>`;
+      return;
+    }
+    renderRotationRank(data);
+  } catch (e) {
+    content.innerHTML = `<div class="rotation-empty" style="color:var(--red)">轮动榜加载失败：${e.message}</div>`;
+  }
+}
+
+function renderRotationRank(data) {
+  const content = document.getElementById('rotationRankContent');
+  if (!content) return;
+  const items = data?.items || [];
+  if (!items.length) {
+    content.innerHTML = '<div class="rotation-empty">当前分类暂无可排序 ETF</div>';
+    return;
+  }
+  content.innerHTML = `
+    <div class="rotation-table-wrap">
+      <table class="rotation-table">
+        <thead>
+          <tr>
+            <th>代码</th>
+            <th>名称</th>
+            <th>轮动阶段</th>
+            <th>轮动建议</th>
+            <th>${data.window}日平均超额</th>
+            <th>窗口判断</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${items.map(item => `
+            <tr>
+              <td><span class="blue">${item.code}</span></td>
+              <td>${item.name || '—'}</td>
+              <td class="phase-cell ${item.phase_color || ''}">${item.phase || '未知'}</td>
+              <td class="action-cell ${item.action_color || ''}">${item.action || '观察'}</td>
+              <td class="${colorSign((item.avg_excess || 0) / 100)}">${fmtSignedPct(item.avg_excess)}</td>
+              <td>${item.window_label || '—'}</td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
+function renderHome() {
+  document.getElementById('mainArea').innerHTML = `
+    <div class="placeholder">
+      <div style="font-size:48px">📊</div>
+      <div>搜索一只 ETF 并点击「运行分析」</div>
+    </div>
+    ${renderRotationRankShell()}
+  `;
+  bindRotationRankControls();
+  loadRotationRank();
+}
+
 // ── 运行分析 ──────────────────────────────────────────────────────────────────
 document.getElementById('runBtn').addEventListener('click', runAnalysis);
 
 async function runAnalysis() {
   if (!currentCode) return;
-  const strategy = document.getElementById('strategySelect').value;
+  const strategy = strategySelect.value;
   const days     = document.getElementById('daysSelect').value;
   const btn      = document.getElementById('runBtn');
+  const params   = getStrategyParams(strategy);
 
   btn.disabled = true;
   btn.textContent = '分析中…';
   showLoading();
 
   try {
-    const res  = await fetch(`/api/analysis/${currentCode}?strategy=${strategy}&days=${days}`);
+    const query = new URLSearchParams({
+      strategy,
+      days,
+      params: JSON.stringify(params),
+    });
+    const res  = await fetch(`/api/analysis/${currentCode}?${query.toString()}`);
     const data = await res.json();
     if (data.error) { showError(data.error); return; }
     lastData = data;
@@ -349,8 +634,20 @@ function renderAll(data) {
 }
 
 function renderMain(data) {
-  const { quote, backtest, factors, strategy, days } = data;
-  const strategyNames = {macd:'MACD', ma_cross:'均线交叉', rsi:'RSI', bollinger:'布林带'};
+  const { quote, backtest, factors, market_regime, strategy_fit, relative_strength, strategy, days, params, metadata } = data;
+  const strategyNames = {
+    macd: 'MACD',
+    trend_filter_macd: '趋势过滤 MACD',
+    supertrend_follow: 'Supertrend 趋势跟随',
+    donchian_breakout: 'Donchian 通道突破',
+    ma_cross: '均线交叉',
+    rsi: 'RSI',
+    bollinger: '布林带',
+  };
+  const strategyLabel = strategyNames[strategy] || strategy;
+  const paramLabel = formatStrategyParams(strategy, params);
+  const meta = metadata || { category_label:'未知', sector:'other', tags:[] };
+  const tagLabel = meta.tags && meta.tags.length ? meta.tags.join(', ') : '—';
 
   document.getElementById('mainArea').innerHTML = `
     <!-- 行情条 -->
@@ -358,6 +655,18 @@ function renderMain(data) {
 
     <!-- 指标卡片 -->
     <div class="metric-row" id="metricRow"></div>
+
+    <div class="regime-card" id="regimeCard"></div>
+
+    <div class="relative-section" id="relativeSection"></div>
+
+    <div class="muted" style="font-size:12px;margin-top:-4px">
+      分类: ${meta.category_label} · 行业: ${meta.sector} · 标签: ${tagLabel}
+    </div>
+
+    <div class="muted" style="font-size:12px;margin-top:-8px">
+      策略: ${strategyLabel} · 参数: ${paramLabel} · 回测区间: ${days} 日
+    </div>
 
     <!-- 图表 -->
     <div class="chart-section">
@@ -373,13 +682,19 @@ function renderMain(data) {
 
     <!-- 交易记录 -->
     <div class="trades-section" id="tradesSection"></div>
+
+    ${renderRotationRankShell()}
   `;
 
   renderQuoteBar(quote);
   renderMetrics(backtest, strategy, days);
+  renderMarketRegime(market_regime, strategy_fit);
+  renderRelativeStrength(relative_strength);
   renderEquityChart(backtest);
   renderFactors(factors);
   renderTrades(backtest.trades, backtest.eq_dates);
+  bindRotationRankControls();
+  loadRotationRank();
 }
 
 // ── 行情条 ────────────────────────────────────────────────────────────────────
@@ -411,7 +726,7 @@ function renderMetrics(bt, strategy, days) {
     { label:'夏普比率',    val: fmt2(bt.sharpe_ratio),      sub: '>1 优秀 >2 极好',     color: bt.sharpe_ratio > 1 ? 'green' : bt.sharpe_ratio < 0 ? 'red' : '' },
     { label:'最大回撤',    val: pct(bt.max_drawdown),       sub: '<10% 极好',           color: Math.abs(bt.max_drawdown) < 0.1 ? 'green' : Math.abs(bt.max_drawdown) > 0.25 ? 'red' : 'yellow' },
     { label:'胜率',        val: pct(bt.win_rate),           sub: `${bt.winning_trades}胜/${bt.losing_trades}负`, color: bt.win_rate > 0.5 ? 'green' : 'red' },
-    { label:'盈亏比',      val: bt.profit_factor >= 999 ? '∞' : fmt2(bt.profit_factor), sub: '>1.5 较好',     color: bt.profit_factor > 1.5 ? 'green' : 'red' },
+    { label:'盈亏比',      val: bt.profit_factor_infinite ? '∞' : fmt2(bt.profit_factor), sub: '>1.5 较好',     color: bt.profit_factor_infinite || bt.profit_factor > 1.5 ? 'green' : 'red' },
   ];
   document.getElementById('metricRow').innerHTML = items.map(it =>
     `<div class="metric-card">
@@ -420,6 +735,185 @@ function renderMetrics(bt, strategy, days) {
       <div class="m-sub">${it.sub}</div>
     </div>`
   ).join('');
+}
+
+function renderMarketRegime(regime, fit) {
+  const safe = regime || { label:'未知', color:'yellow', confidence:0, reasons:['暂无状态信息'] };
+  const fitSafe = fit || { label:'一般', color:'yellow', reason:'暂无策略适配信息' };
+  document.getElementById('regimeCard').innerHTML = `
+    <div class="regime-grid">
+      <div>
+        <div class="regime-head">
+          <div>
+            <div class="regime-title">市场状态识别</div>
+            <div class="regime-value ${safe.color}">${safe.label}</div>
+          </div>
+          <div class="muted">置信度 ${Math.round((safe.confidence || 0) * 100)}%</div>
+        </div>
+        <div class="regime-reasons">${(safe.reasons || []).join('；')}</div>
+      </div>
+      <div class="fit-card">
+        <div class="fit-title">当前策略适配度</div>
+        <div class="fit-value ${fitSafe.color}">${fitSafe.label}</div>
+        <div class="fit-reason">${fitSafe.reason}</div>
+      </div>
+    </div>
+  `;
+}
+
+function renderRelativeStrength(relative) {
+  const safe = relative || {
+    benchmarks: [],
+    rotation: { phase:'未知', color:'yellow', reason:'暂无相对强弱信息' },
+    rotation_advice: { action:'观察', color:'yellow', reason:'暂无轮动建议' },
+    window_summary: {},
+    history: { dates: [], series: [] },
+    cyclical:false
+  };
+  const rotation = safe.rotation || { phase:'未知', color:'yellow', reason:'暂无轮动判断' };
+  const rotationAdvice = safe.rotation_advice || { action:'观察', color:'yellow', reason:'暂无轮动建议' };
+  const windows = safe.window_summary || {};
+  const items = safe.benchmarks || [];
+  document.getElementById('relativeSection').innerHTML = `
+    <div class="relative-head">
+      <div>
+        <div class="regime-title">相对指数强弱</div>
+        <div class="muted" style="font-size:12px;margin-top:2px">
+          ${safe.cyclical ? '检测到周期/行业属性，已增强强弱切换解读' : '对比沪深300 / 中证500 / 中证1000代理 ETF'}
+        </div>
+      </div>
+      <div class="rotation-card">
+        <div class="fit-title">强弱切换阶段</div>
+        <div class="fit-value ${rotation.color}">${rotation.phase}</div>
+        <div class="fit-title" style="margin-top:2px">轮动建议</div>
+        <div class="fit-value ${rotationAdvice.color}" style="font-size:16px">${rotationAdvice.action}</div>
+      </div>
+    </div>
+    <div class="fit-reason">${rotation.reason}；${rotationAdvice.reason}</div>
+    <div class="window-grid">
+      ${['20', '60', '120'].map(period => {
+        const item = windows[period] || { label:'数据不足', color:'yellow', avg_excess:null };
+        return `
+          <div class="relative-card">
+            <div class="relative-name">${period}日窗口</div>
+            <div class="relative-status ${item.color}">${item.label}</div>
+            <div class="relative-sub">平均超额: ${fmtSignedPct(item.avg_excess)}</div>
+          </div>
+        `;
+      }).join('')}
+    </div>
+    <div class="relative-head">
+      <div class="fit-title">相对强弱轨迹</div>
+      <div class="window-switch">
+        ${[20, 60, 120, 250].map(period => `
+          <button class="window-chip ${relativeWindow === period ? 'active' : ''}" onclick="setRelativeWindow(${period})">${period}日</button>
+        `).join('')}
+      </div>
+    </div>
+    <div class="relative-grid">
+      ${items.map(item => `
+        <div class="relative-card">
+          <div class="relative-name">${item.name} (${item.code})</div>
+          <div class="relative-status ${item.color}">${item.status}</div>
+          <div class="relative-sub">
+            20日超额: ${fmtSignedPct(item.excess_return_20)}<br>
+            60日超额: ${fmtSignedPct(item.excess_return_60)}<br>
+            120日超额: ${fmtSignedPct(item.excess_return_120)}<br>
+            ${item.reason || ''}
+          </div>
+        </div>
+      `).join('')}
+    </div>
+    <div class="mini-chart-wrap"><canvas id="relativeChart"></canvas></div>
+  `;
+  renderRelativeHistoryChart(safe.history);
+}
+
+function setRelativeWindow(period) {
+  relativeWindow = period;
+  if (lastData?.relative_strength) renderRelativeStrength(lastData.relative_strength);
+}
+
+function renderRelativeHistoryChart(history) {
+  destroyChart('relativeChart');
+  if (!history || !history.dates || !history.dates.length || !history.series || !history.series.length) return;
+  const slice = Math.min(relativeWindow, history.dates.length);
+  const labels = history.dates.slice(-slice);
+  const ctx = document.getElementById('relativeChart').getContext('2d');
+  const palette = ['#58a6ff', '#3fb950', '#d29922'];
+  relativeChart = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels: labels,
+      datasets: history.series.map((item, idx) => ({
+        label: item.name,
+        data: item.values.slice(-slice),
+        borderColor: palette[idx % palette.length],
+        borderWidth: 1.8,
+        pointRadius: 0,
+        tension: 0.2,
+      })),
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { intersect: false, mode: 'index' },
+      plugins: { legend: { labels: { color: '#8b949e' } } },
+      scales: {
+        x: { ticks: { color: '#8b949e', maxTicksLimit: 8, maxRotation: 0 }, grid: { color: '#21262d' } },
+        y: { ticks: { color: '#8b949e' }, grid: { color: '#21262d' }, position: 'right' },
+      },
+    },
+  });
+}
+
+function renderStrategyParams() {
+  const strategy = strategySelect.value;
+  const config = STRATEGY_CONFIG[strategy];
+  const wrap = document.getElementById('strategyParams');
+  if (!config) {
+    wrap.innerHTML = '<div class="param-help">当前策略无可配置参数。</div>';
+    return;
+  }
+  wrap.innerHTML = `
+    <div class="param-grid">
+      ${config.params.map(p => `
+        <div class="param-field">
+          <label for="param_${p.key}">${p.label}</label>
+          <input
+            id="param_${p.key}"
+            class="param-input"
+            data-param-key="${p.key}"
+            type="${p.type || 'number'}"
+            step="${p.step || '1'}"
+            value="${p.value}"
+          >
+        </div>
+      `).join('')}
+    </div>
+    <div class="param-help">${config.help || ''}</div>
+  `;
+}
+
+function getStrategyParams(strategy) {
+  const config = STRATEGY_CONFIG[strategy];
+  if (!config) return {};
+  const params = {};
+  config.params.forEach(p => {
+    const el = document.getElementById(`param_${p.key}`);
+    if (!el || el.value === '') return;
+    params[p.key] = Number(el.value);
+  });
+  return params;
+}
+
+function formatStrategyParams(strategy, params) {
+  const config = STRATEGY_CONFIG[strategy];
+  if (!config || !params || !Object.keys(params).length) return '默认';
+  return config.params
+    .filter(p => params[p.key] != null)
+    .map(p => `${p.label}=${params[p.key]}`)
+    .join(', ');
 }
 
 // ── 图表切换 ──────────────────────────────────────────────────────────────────
@@ -659,6 +1153,11 @@ function showError(msg) {
 // ── 格式化工具 ────────────────────────────────────────────────────────────────
 function fmt(v)  { return v == null ? '—' : Number(v).toFixed(3); }
 function fmt2(v) { return v == null ? '—' : Number(v).toFixed(2); }
+function fmtSignedPct(v) {
+  if (v == null) return '—';
+  const n = Number(v);
+  return `${n >= 0 ? '+' : ''}${n.toFixed(2)}%`;
+}
 function pct(v)  {
   if (v == null) return '—';
   const s = (v * 100).toFixed(2) + '%';
@@ -671,6 +1170,8 @@ function fmtVol(v) {
   return v.toFixed(0);
 }
 function colorSign(v) { return v == null ? '' : v >= 0 ? 'green' : 'red'; }
+renderStrategyParams();
+renderHome();
 </script>
 </body>
 </html>

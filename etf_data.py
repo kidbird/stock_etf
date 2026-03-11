@@ -7,12 +7,14 @@ A股ETF数据获取模块，支持上交所(510/511/512/515/516)和深交所(159
 import requests
 import pandas as pd
 import time
+import csv
 from datetime import date, datetime, timedelta
 from typing import Dict, List, Optional, Any
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import logging
 
 from all_etf_codes import ETF_CODES
+from etf_metadata import infer_etf_metadata
 from etf_storage import ETFLocalStorage
 
 # 模块级懒加载单例，所有 ETFDataFetcher 实例共用同一个 storage
@@ -27,9 +29,8 @@ def _get_storage() -> ETFLocalStorage:
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# ── 宽基ETF分类 ───────────────────────────────────────────────────────────────
-# 凡代码以下列前缀开头，均视为宽基ETF
-_WIDE_BASIS_PREFIXES = ("510", "512", "56", "588", "515", "516", "159")
+# ── 兼容旧逻辑的常量 ──────────────────────────────────────────────────────────
+_WIDE_BASIS_PREFIXES = ("510", "588", "159")
 
 
 # ── 内存缓存 ──────────────────────────────────────────────────────────────────
@@ -85,24 +86,75 @@ class ETFCodeMapper:
         return cls._all().get(code)
 
     @classmethod
+    def get_etf_metadata(cls, code: str) -> Dict[str, Any]:
+        name = cls.get_etf_name(code) or ""
+        return infer_etf_metadata(code, name)
+
+    @classmethod
+    def get_etf_category(cls, code: str) -> str:
+        return cls.get_etf_metadata(code)["category"]
+
+    @classmethod
+    def get_etf_category_label(cls, code: str) -> str:
+        return cls.get_etf_metadata(code)["category_label"]
+
+    @classmethod
+    def get_etf_sector(cls, code: str) -> str:
+        return cls.get_etf_metadata(code)["sector"]
+
+    @classmethod
+    def get_etf_tags(cls, code: str) -> List[str]:
+        return cls.get_etf_metadata(code)["tags"]
+
+    @classmethod
     def get_all_codes(cls) -> List[str]:
         return list(cls._all().keys())
 
     @classmethod
+    def get_metadata_table(cls, category: Optional[str] = None, refresh: bool = False) -> List[Dict[str, Any]]:
+        if refresh:
+            cls.load_from_akshare()
+
+        rows: List[Dict[str, Any]] = []
+        for code, name in cls._all().items():
+            meta = cls.get_etf_metadata(code)
+            if category and meta["category"] != category:
+                continue
+            rows.append(meta)
+
+        rows.sort(key=lambda item: (item["category"], item["sector"], item["code"]))
+        return rows
+
+    @classmethod
+    def export_metadata_table(cls, path: str, category: Optional[str] = None, refresh: bool = False) -> int:
+        rows = cls.get_metadata_table(category=category, refresh=refresh)
+        with open(path, "w", newline="", encoding="utf-8") as fp:
+            writer = csv.DictWriter(
+                fp,
+                fieldnames=["code", "name", "category", "category_label", "sector", "tags"],
+            )
+            writer.writeheader()
+            for row in rows:
+                out = dict(row)
+                out["tags"] = ",".join(out.get("tags", []))
+                writer.writerow(out)
+        return len(rows)
+
+    @classmethod
     def get_wide_basis_codes(cls) -> List[str]:
-        return [c for c in cls._all() if cls.is_wide_basis(c)]
+        return [c for c in cls._all() if cls.get_etf_category(c) == "wide_basis"]
 
     @classmethod
     def get_industry_codes(cls) -> List[str]:
-        return [c for c in cls._all() if cls.is_industry(c)]
+        return [c for c in cls._all() if cls.get_etf_category(c) == "industry"]
 
     @classmethod
     def is_wide_basis(cls, code: str) -> bool:
-        return code.startswith(_WIDE_BASIS_PREFIXES)
+        return cls.get_etf_category(code) == "wide_basis"
 
     @classmethod
     def is_industry(cls, code: str) -> bool:
-        return not cls.is_wide_basis(code)
+        return cls.get_etf_category(code) == "industry"
 
 
 # ── 数据获取 ──────────────────────────────────────────────────────────────────
@@ -284,22 +336,39 @@ class ETFDataFetcher:
         """按顺序尝试各数据源，返回第一个成功的结果（None 表示全部失败）。"""
         for df in [
             self._history_from_akshare(etf_code, days, start_dt=start_dt, end_dt=end_dt),
-            self._history_from_yahoo(etf_code, days),
-            self._history_from_eastmoney(etf_code, days),
+            self._history_from_yahoo(etf_code, days, start_dt=start_dt, end_dt=end_dt),
+            self._history_from_eastmoney(etf_code, days, start_dt=start_dt, end_dt=end_dt),
         ]:
             if df is not None and len(df) > 0:
                 return df
         return None
 
+    def _normalize_history_range(self, df: Optional[pd.DataFrame],
+                                 start_dt: Optional[date] = None,
+                                 end_dt: Optional[date] = None) -> Optional[pd.DataFrame]:
+        if df is None or len(df) == 0:
+            return None
+        out = df.copy()
+        out["date"] = pd.to_datetime(out["date"])
+        if start_dt is not None:
+            out = out[out["date"] >= pd.Timestamp(start_dt)]
+        if end_dt is not None:
+            out = out[out["date"] <= pd.Timestamp(end_dt)]
+        out = out.sort_values("date").drop_duplicates(subset=["date"]).reset_index(drop=True)
+        return out if len(out) > 0 else None
+
     def get_historical_data(self, etf_code: str, days: int = 30,
-                            use_cache: bool = True) -> Optional[pd.DataFrame]:
+                            use_cache: bool = True,
+                            return_metadata: bool = False):
         """
         获取历史行情数据。
         use_cache=True（默认）：优先读本地 SQLite，自动增量补全缺口后返回。
         use_cache=False：直接走网络拉取，不读写本地缓存。
         """
+        metadata = {"new_rows": 0, "source": "network" if not use_cache else "cache"}
         if not use_cache:
-            return self._fetch_history_network(etf_code, days)
+            df = self._fetch_history_network(etf_code, days)
+            return (df, metadata) if return_metadata else df
 
         storage = _get_storage()
         end_dt = date.today()
@@ -316,23 +385,31 @@ class ETFDataFetcher:
         if has_local:
             # 本地数据已是最新，直接返回
             if last_date >= end_dt - timedelta(days=1):
-                return storage.load_prices(etf_code, start_dt, end_dt)
+                df = storage.load_prices(etf_code, start_dt, end_dt)
+                return (df, metadata) if return_metadata else df
 
             # 只拉 last_date+1 到 end_dt 的缺口
             gap_start = last_date + timedelta(days=1)
             new_df = self._fetch_history_network(etf_code, days,
                                                   start_dt=gap_start, end_dt=end_dt)
             if new_df is not None and len(new_df) > 0:
+                new_df = self._normalize_history_range(new_df, gap_start, end_dt)
+            if new_df is not None and len(new_df) > 0:
                 storage.save_prices(etf_code, new_df)
                 storage.upsert_meta(etf_code, self.mapper.get_etf_name(etf_code) or "")
-            return storage.load_prices(etf_code, start_dt, end_dt)
+                metadata["new_rows"] = len(new_df)
+            df = storage.load_prices(etf_code, start_dt, end_dt)
+            return (df, metadata) if return_metadata else df
 
         # ── 本地无完整数据，全量拉取 ──────────────────────────────
         full_df = self._fetch_history_network(etf_code, days)
         if full_df is not None and len(full_df) > 0:
+            full_df = self._normalize_history_range(full_df, start_dt, end_dt)
+        if full_df is not None and len(full_df) > 0:
             storage.save_prices(etf_code, full_df)
             storage.upsert_meta(etf_code, self.mapper.get_etf_name(etf_code) or "")
-        return full_df
+            metadata["new_rows"] = len(full_df)
+        return (full_df, metadata) if return_metadata else full_df
 
     def _history_from_akshare(self, etf_code: str, days: int,
                                start_dt: Optional[date] = None,
@@ -358,7 +435,9 @@ class ETFDataFetcher:
             logger.debug(f"akshare 历史 {etf_code} 失败: {e}")
         return None
 
-    def _history_from_yahoo(self, etf_code: str, days: int) -> Optional[pd.DataFrame]:
+    def _history_from_yahoo(self, etf_code: str, days: int,
+                            start_dt: Optional[date] = None,
+                            end_dt: Optional[date] = None) -> Optional[pd.DataFrame]:
         try:
             symbol = self._get_yahoo_symbol(etf_code)
             url = f"{self.yahoo_base}{symbol}"
@@ -380,12 +459,14 @@ class ETFDataFetcher:
                 })
                 df = df.dropna().sort_values("date").reset_index(drop=True)
                 if len(df) > 0:
-                    return df
+                    return self._normalize_history_range(df, start_dt, end_dt)
         except Exception as e:
             logger.debug(f"Yahoo Finance 历史 {etf_code} 失败: {e}")
         return None
 
-    def _history_from_eastmoney(self, etf_code: str, days: int) -> Optional[pd.DataFrame]:
+    def _history_from_eastmoney(self, etf_code: str, days: int,
+                                start_dt: Optional[date] = None,
+                                end_dt: Optional[date] = None) -> Optional[pd.DataFrame]:
         try:
             market = "0" if etf_code.startswith("159") or etf_code.startswith("588") else "1"
             url = "https://push2his.eastmoney.com/api/qt/stock/kline/get"
@@ -417,7 +498,7 @@ class ETFDataFetcher:
                         "volume": float(parts[5]),
                     })
             df = pd.DataFrame(rows).sort_values("date").reset_index(drop=True)
-            return df if len(df) > 0 else None
+            return self._normalize_history_range(df, start_dt, end_dt)
         except Exception as e:
             logger.debug(f"东方财富 历史 {etf_code} 失败: {e}")
         return None

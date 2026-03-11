@@ -2,11 +2,15 @@
 ETF Backtest Engine Module
 """
 
-import pandas as pd
-import numpy as np
-from typing import Dict, List, Optional
 from dataclasses import dataclass, field
 import logging
+from typing import Dict, List, Optional
+
+import numpy as np
+import pandas as pd
+
+from strategies import build_strategy_registry
+from strategies.base import StrategyDecision
 
 logger = logging.getLogger(__name__)
 
@@ -35,129 +39,117 @@ class BacktestResult:
     trades: List[Dict] = field(default_factory=list)
 
 
-
-class SignalGenerator:
-    def generate(self, df: pd.DataFrame, params: Dict) -> pd.Series:
-        raise NotImplementedError
-
-
-class RSISignal(SignalGenerator):
-    def generate(self, df: pd.DataFrame, params: Dict) -> pd.Series:
-        from etf_factors import calculate_factor
-        period = params.get('period', 14)
-        oversold = params.get('oversold', 30)
-        overbought = params.get('overbought', 70)
-        rsi = calculate_factor(df, 'rsi', period=period)
-        signal = pd.Series(0, index=df.index)
-        signal[rsi < oversold] = 1
-        signal[rsi > overbought] = -1
-        return signal
-
-
-class MACDSignal(SignalGenerator):
-    def generate(self, df: pd.DataFrame, params: Dict) -> pd.Series:
-        from etf_factors import calculate_factor
-        macd_df = calculate_factor(df, 'macd', fast=params.get('fast', 12), slow=params.get('slow', 26), signal=params.get('signal', 9))
-        signal = pd.Series(0, index=df.index)
-        signal[macd_df['macd'] > macd_df['signal']] = 1
-        signal[macd_df['macd'] < macd_df['signal']] = -1
-        return signal
-
-
-class MASignal(SignalGenerator):
-    def generate(self, df: pd.DataFrame, params: Dict) -> pd.Series:
-        from etf_factors import calculate_factor
-        return calculate_factor(df, 'ma_cross', short_period=params.get('short_period', 5), long_period=params.get('long_period', 20))
-
-
-class BollingerSignal(SignalGenerator):
-    def generate(self, df: pd.DataFrame, params: Dict) -> pd.Series:
-        from etf_factors import calculate_factor
-        bb_df = calculate_factor(df, 'bollinger_bands', window=params.get('window', 20), num_std=params.get('num_std', 2))
-        signal = pd.Series(0, index=df.index)
-        signal[bb_df['position'] < 0.2] = 1
-        signal[bb_df['position'] > 0.8] = -1
-        return signal
-
-
 class ETFBacktestEngine:
     def __init__(self, config: Optional[BacktestConfig] = None):
         self.config = config or BacktestConfig()
-        self.signal_generators = {
-            'rsi': RSISignal(),
-            'macd': MACDSignal(),
-            'ma_cross': MASignal(),
-            'bollinger': BollingerSignal(),
-        }
+        self.strategies = build_strategy_registry()
 
     def run(self, df: pd.DataFrame, strategy: str, params: Dict) -> BacktestResult:
         if len(df) < 20:
             return BacktestResult()
-        signal_generator = self.signal_generators.get(strategy)
-        if signal_generator is None:
+        strategy_obj = self.strategies.get(strategy)
+        if strategy_obj is None:
             raise ValueError(f"未知的策略: {strategy}")
-        signals = signal_generator.generate(df, params)
-        return self._simulate(df, signals)
+        ctx = strategy_obj.prepare(df, params)
+        decision = strategy_obj.decide(ctx)
+        return self._simulate(df, decision)
 
-    def _simulate(self, df: pd.DataFrame, signals: pd.Series) -> BacktestResult:
+    def _simulate(self, df: pd.DataFrame, decision: StrategyDecision) -> BacktestResult:
         cash = self.config.initial_capital
-        position = 0
+        position = 0.0
         equity = [cash]
         trades = []
-        entry_price = 0
+        entry_price = 0.0
         entry_idx = 0
 
-        signals = signals.fillna(0).astype(int)
+        entry = decision.entry.shift(1).fillna(0).astype(int)
+        exit_ = decision.exit.shift(1).fillna(0).astype(int)
+        regime = decision.regime.shift(1).fillna(0).astype(int)
 
         for i in range(1, len(df)):
-            current_price = df['close'].iloc[i]
-            signal = int(signals.iloc[i])
+            current_price = df["close"].iloc[i]
+            can_enter = int(regime.iloc[i]) == 1
+            entry_signal = int(entry.iloc[i]) == 1
+            exit_signal = int(exit_.iloc[i]) == 1 or int(regime.iloc[i]) <= 0
 
-            if signal == 1 and position == 0:
-                shares = (cash * self.config.position_size) / (current_price * (1 + self.config.commission_rate + self.config.slippage))
+            if entry_signal and can_enter and position == 0:
+                shares = (cash * self.config.position_size) / (
+                    current_price * (1 + self.config.commission_rate + self.config.slippage)
+                )
                 cost = shares * current_price * (1 + self.config.commission_rate + self.config.slippage)
                 if cost <= cash * 1.001:
                     cash -= cost
                     position = shares
                     entry_price = current_price
                     entry_idx = i
-                    trades.append({'date': i, 'action': 'BUY', 'price': current_price, 'shares': shares, 'cost': cost})
+                    trades.append({
+                        "date": i,
+                        "action": "BUY",
+                        "price": current_price,
+                        "shares": shares,
+                        "cost": cost,
+                    })
 
-            elif signal == -1 and position > 0:
+            elif position > 0 and exit_signal:
                 proceeds = position * current_price * (1 - self.config.commission_rate - self.config.slippage)
                 profit = (current_price - entry_price) / entry_price
-                trades.append({'date': i, 'action': 'SELL', 'price': current_price, 'profit': profit, 'holding_days': i - entry_idx})
+                trades.append({
+                    "date": i,
+                    "action": "SELL",
+                    "price": current_price,
+                    "profit": profit,
+                    "holding_days": i - entry_idx,
+                })
                 cash += proceeds
                 position = 0
 
             equity.append(cash + position * current_price)
 
-        equity_curve = pd.DataFrame({'date': list(range(len(equity))), 'equity': equity})
+        if position > 0:
+            last_idx = len(df) - 1
+            last_price = df["close"].iloc[last_idx]
+            proceeds = position * last_price * (1 - self.config.commission_rate - self.config.slippage)
+            profit = (last_price - entry_price) / entry_price
+            trades.append({
+                "date": last_idx,
+                "action": "SELL",
+                "price": last_price,
+                "profit": profit,
+                "holding_days": last_idx - entry_idx,
+                "forced_exit": True,
+            })
+            cash += proceeds
+            position = 0
+            equity[-1] = cash
+
+        equity_curve = pd.DataFrame({"date": list(range(len(equity))), "equity": equity})
         return self._calculate_metrics(equity_curve, trades)
 
     def _calculate_metrics(self, equity_curve: pd.DataFrame, trades: List[Dict]) -> BacktestResult:
         if len(equity_curve) == 0:
             return BacktestResult()
 
-        equity = equity_curve['equity']
+        equity = equity_curve["equity"]
         total_return = (equity.iloc[-1] - equity.iloc[0]) / equity.iloc[0]
         n_days = len(equity)
         annualized_return = (1 + total_return) ** (252 / n_days) - 1 if n_days > 0 else 0.0
         daily_returns = equity.pct_change().dropna()
         volatility = daily_returns.std() * np.sqrt(252)
-        sharpe_ratio = (daily_returns.mean() * 252 - self.config.risk_free_rate) / volatility if volatility > 0 else 0
+        sharpe_ratio = (
+            (daily_returns.mean() * 252 - self.config.risk_free_rate) / volatility if volatility > 0 else 0
+        )
 
         rolling_max = equity.expanding().max()
         max_drawdown = ((equity - rolling_max) / rolling_max).min()
 
-        winning_trades = [t for t in trades if t.get('action') == 'SELL' and t.get('profit', 0) > 0]
-        losing_trades = [t for t in trades if t.get('action') == 'SELL' and t.get('profit', 0) <= 0]
+        winning_trades = [t for t in trades if t.get("action") == "SELL" and t.get("profit", 0) > 0]
+        losing_trades = [t for t in trades if t.get("action") == "SELL" and t.get("profit", 0) <= 0]
         total_trades = len(winning_trades) + len(losing_trades)
         win_rate = len(winning_trades) / total_trades if total_trades > 0 else 0
 
-        total_profit = sum(t['profit'] for t in winning_trades)
-        total_loss = abs(sum(t['profit'] for t in losing_trades))
-        profit_factor = total_profit / total_loss if total_loss > 0 else float('inf') if total_profit > 0 else 0.0
+        total_profit = sum(t["profit"] for t in winning_trades)
+        total_loss = abs(sum(t["profit"] for t in losing_trades))
+        profit_factor = total_profit / total_loss if total_loss > 0 else float("inf") if total_profit > 0 else 0.0
 
         return BacktestResult(
             total_return=total_return,
@@ -170,12 +162,19 @@ class ETFBacktestEngine:
             winning_trades=len(winning_trades),
             losing_trades=len(losing_trades),
             equity_curve=equity_curve,
-            trades=trades
+            trades=trades,
         )
 
 
-def run_backtest(etf_code: str, strategy: str, params: Dict, days: int = 500, config: Optional[BacktestConfig] = None) -> BacktestResult:
+def run_backtest(
+    etf_code: str,
+    strategy: str,
+    params: Dict,
+    days: int = 500,
+    config: Optional[BacktestConfig] = None,
+) -> BacktestResult:
     from etf_data import ETFDataFetcher
+
     df = ETFDataFetcher().get_historical_data(etf_code, days)
     if df is None or len(df) < 20:
         return BacktestResult()
