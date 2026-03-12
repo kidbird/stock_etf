@@ -13,6 +13,7 @@ from etf_factors import ETFFactorCalculator
 from etf_backtest import ETFBacktestEngine, BacktestConfig
 from etf_advisor import get_investment_advice, format_advice
 from etf_relative_strength import analyze_relative_strength
+from factor_combo import list_combo_templates, run_combo_analysis
 
 logger = logging.getLogger(__name__)
 
@@ -120,6 +121,21 @@ class ETFAnalysisSystem:
             return None
         return self.backtest_engine.run(df, strategy, params)
 
+    def analyze_factor_combo(self, etf_code: str, combo_name: str, days: int = 500):
+        df = self.data_fetcher.get_historical_data(etf_code, days)
+        if df is None or len(df) < 30:
+            return None
+        benchmark_df = self.data_fetcher.get_historical_data("510300", max(days, 320))
+        metadata = self.data_fetcher.get_fund_profile(etf_code)
+        return run_combo_analysis(
+            "etf",
+            etf_code,
+            df,
+            metadata=metadata,
+            combo_name=combo_name,
+            benchmark_df=benchmark_df,
+        )
+
     def get_investment_advice(self, etf_code: str, strategy: str, backtest_result, days: int = 60):
         etf_name = self.data_fetcher.mapper.get_etf_name(etf_code) or "未知ETF"
         current_quote = self.data_fetcher.get_realtime_quote(etf_code)
@@ -145,7 +161,8 @@ class ETFAnalysisSystem:
                     logger.warning("因子计算失败 %s %s: %s", etf_code, name, exc)
         return get_investment_advice(etf_code, etf_name, backtest_result, current_price, factors)
 
-    def full_analysis(self, etf_code: str, strategy: str = "rsi", params: dict = None, rs_window: int = 60):
+    def full_analysis(self, etf_code: str, strategy: str = "rsi", params: dict = None,
+                      rs_window: int = 60, days: int = 500):
         params = params or {}
         meta = ETFCodeMapper.get_etf_metadata(etf_code)
         etf_name = meta["name"]
@@ -162,7 +179,7 @@ class ETFAnalysisSystem:
         if quote:
             print(f"当前价格: {quote['latest_price']}, 涨跌幅: {quote['change_pct']}%")
 
-        result = self.run_backtest(etf_code, strategy, params)
+        result = self.run_backtest(etf_code, strategy, params, days=days)
         if result:
             print(f"总收益率: {result.total_return*100:.2f}%, 夏普比率: {result.sharpe_ratio:.2f}, 最大回撤: {result.max_drawdown*100:.2f}%")
 
@@ -360,10 +377,14 @@ def main():
     parser.add_argument('--strategy', '-s', type=str, default='rsi',
                         choices=['rsi', 'macd', 'ma_cross', 'bollinger',
                                  'trend_filter_macd', 'supertrend_follow', 'donchian_breakout'])
+    parser.add_argument('--combo', type=str, choices=list_combo_templates("etf"),
+                        help='多因子组合名称')
+    parser.add_argument('--list-combos', action='store_true', help='列出ETF多因子组合模板')
+    parser.add_argument('--list-factors', action='store_true', help='列出ETF可用因子')
     parser.add_argument('--list', '-l', action='store_true', help='列出所有ETF')
     parser.add_argument('--quote', '-q', action='store_true', help='获取实时行情')
     parser.add_argument('--days', type=int, default=500,
-                        help='回测/下载天数（默认500，推荐1500）')
+                        help='回测/下载交易日样本数（默认500，推荐1500）')
     parser.add_argument('--refresh', action='store_true',
                         help='从akshare刷新ETF列表并显示统计')
     parser.add_argument('--download', action='store_true',
@@ -432,6 +453,16 @@ def main():
             tags = ",".join(e["tags"]) if e["tags"] else "—"
             print(f"  {e['code']} - {e['name']} [{e['type']}] 行业={e['sector']} 标签={tags}")
 
+    elif args.list_combos:
+        print("ETF多因子组合模板:")
+        for combo in list_combo_templates("etf"):
+            print(f"  {combo}")
+
+    elif args.list_factors:
+        print("ETF可用因子:")
+        for factor in system.factor_calculator.get_available_factors():
+            print(f"  {factor}")
+
     elif args.quote and args.code:
         quote = system.data_fetcher.get_realtime_quote(args.code)
         if quote:
@@ -448,8 +479,23 @@ def main():
         )
         print(format_rotation_ranking(ranked, rs_window=args.rs_window, category=args.rotation_category))
 
+    elif args.code and args.combo:
+        result = system.analyze_factor_combo(args.code, args.combo, days=args.days)
+        if not result:
+            print("多因子组合分析失败：历史数据不足")
+            return
+        print(f"ETF: {args.code}")
+        print(f"组合: {result['combo']} - {result['description']}")
+        print(f"综合得分: {result['composite_score']:.2f}")
+        print(f"总收益率: {result['backtest']['total_return']*100:.2f}%")
+        print(f"年化收益率: {result['backtest']['annualized_return']*100:.2f}%")
+        print(f"夏普比率: {result['backtest']['sharpe_ratio']:.2f}")
+        print("因子值:")
+        for key, value in result["factor_values"].items():
+            print(f"  {key}: {value}")
+
     elif args.code:
-        system.full_analysis(args.code, args.strategy, rs_window=args.rs_window)
+        system.full_analysis(args.code, args.strategy, rs_window=args.rs_window, days=args.days)
 
     else:
         parser.print_help()

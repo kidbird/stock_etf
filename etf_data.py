@@ -170,6 +170,32 @@ class ETFDataFetcher:
         self.mapper = ETFCodeMapper()
         self.yahoo_base = "https://query1.finance.yahoo.com/v8/finance/chart/"
 
+    def _calendar_lookback(self, days: int) -> int:
+        return max(int(days * 2.2), days + 30)
+
+    def _tail_trading_days(
+        self, df: Optional[pd.DataFrame], days: int
+    ) -> Optional[pd.DataFrame]:
+        if df is None or len(df) == 0:
+            return None
+        out = df.copy()
+        out["date"] = pd.to_datetime(out["date"])
+        out = out.sort_values("date").drop_duplicates(subset=["date"]).reset_index(drop=True)
+        return out.tail(days).reset_index(drop=True)
+
+    def _pick_numeric(self, row: pd.Series, candidates: List[str]) -> Optional[float]:
+        for key in candidates:
+            if key not in row:
+                continue
+            value = row.get(key)
+            if value in ("", None):
+                continue
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                continue
+        return None
+
     def _get_yahoo_symbol(self, etf_code: str) -> str:
         if etf_code.startswith("159") or etf_code.startswith("588"):
             return f"{etf_code}.SZ"
@@ -204,6 +230,8 @@ class ETFDataFetcher:
                     "high": float(row.get("最高价", 0) or 0),
                     "low": float(row.get("最低价", 0) or 0),
                     "volume": float(row.get("成交量", 0) or 0),
+                    "fund_size": self._pick_numeric(row, ["基金规模", "规模", "流通规模"]),
+                    "turnover_rate": self._pick_numeric(row, ["换手率"]),
                     "source": "akshare",
                 }
             ETFDataFetcher._akshare_spot_cache = batch
@@ -233,6 +261,16 @@ class ETFDataFetcher:
         if result:
             self.cache.set(cache_key, result)
         return result
+
+    def get_fund_profile(self, etf_code: str) -> Dict[str, Any]:
+        quote = self.get_realtime_quote(etf_code) or {}
+        return {
+            "code": etf_code,
+            "name": self.mapper.get_etf_name(etf_code) or etf_code,
+            "fund_size": quote.get("fund_size"),
+            "turnover_rate": quote.get("turnover_rate"),
+            "source": quote.get("source", "static"),
+        }
 
     def _quote_from_yahoo(self, etf_code: str) -> Optional[Dict]:
         try:
@@ -365,51 +403,55 @@ class ETFDataFetcher:
         use_cache=True（默认）：优先读本地 SQLite，自动增量补全缺口后返回。
         use_cache=False：直接走网络拉取，不读写本地缓存。
         """
-        metadata = {"new_rows": 0, "source": "network" if not use_cache else "cache"}
+        requested_days = days
+        calendar_days = self._calendar_lookback(days)
+        metadata = {
+            "new_rows": 0,
+            "source": "network" if not use_cache else "cache",
+            "requested_rows": requested_days,
+        }
         if not use_cache:
-            df = self._fetch_history_network(etf_code, days)
+            df = self._fetch_history_network(etf_code, calendar_days)
+            df = self._tail_trading_days(df, requested_days)
             return (df, metadata) if return_metadata else df
 
         storage = _get_storage()
         end_dt = date.today()
-        start_dt = end_dt - timedelta(days=days)
+        start_dt = end_dt - timedelta(days=calendar_days)
+        local_df = storage.load_prices(etf_code, start_dt, end_dt)
+        last_date = local_df["date"].max().date() if local_df is not None and len(local_df) > 0 else None
 
-        last_date = storage.get_last_date(etf_code)
-        first_date = storage.get_first_date(etf_code)
-
-        # ── 判断本地数据是否覆盖请求区间 ──────────────────────────
-        # 允许 7 天的容差（日历日 vs 交易日偏差、节假日等）
-        has_local = (last_date is not None and first_date is not None
-                     and first_date <= start_dt + timedelta(days=7))
-
-        if has_local:
-            # 本地数据已是最新，直接返回
+        if local_df is not None and len(local_df) >= requested_days and last_date is not None:
             if last_date >= end_dt - timedelta(days=1):
-                df = storage.load_prices(etf_code, start_dt, end_dt)
-                return (df, metadata) if return_metadata else df
+                local_df = self._tail_trading_days(local_df, requested_days)
+                return (local_df, metadata) if return_metadata else local_df
 
-            # 只拉 last_date+1 到 end_dt 的缺口
-            gap_start = last_date + timedelta(days=1)
-            new_df = self._fetch_history_network(etf_code, days,
-                                                  start_dt=gap_start, end_dt=end_dt)
-            if new_df is not None and len(new_df) > 0:
-                new_df = self._normalize_history_range(new_df, gap_start, end_dt)
-            if new_df is not None and len(new_df) > 0:
-                storage.save_prices(etf_code, new_df)
-                storage.upsert_meta(etf_code, self.mapper.get_etf_name(etf_code) or "")
-                metadata["new_rows"] = len(new_df)
-            df = storage.load_prices(etf_code, start_dt, end_dt)
-            return (df, metadata) if return_metadata else df
-
-        # ── 本地无完整数据，全量拉取 ──────────────────────────────
-        full_df = self._fetch_history_network(etf_code, days)
-        if full_df is not None and len(full_df) > 0:
-            full_df = self._normalize_history_range(full_df, start_dt, end_dt)
-        if full_df is not None and len(full_df) > 0:
-            storage.save_prices(etf_code, full_df)
+        gap_start = last_date + timedelta(days=1) if last_date is not None else start_dt
+        new_df = self._fetch_history_network(
+            etf_code,
+            calendar_days,
+            start_dt=gap_start,
+            end_dt=end_dt,
+        )
+        if new_df is not None and len(new_df) > 0:
+            new_df = self._normalize_history_range(new_df, gap_start, end_dt)
+        if new_df is not None and len(new_df) > 0:
+            storage.save_prices(etf_code, new_df)
             storage.upsert_meta(etf_code, self.mapper.get_etf_name(etf_code) or "")
-            metadata["new_rows"] = len(full_df)
-        return (full_df, metadata) if return_metadata else full_df
+            metadata["new_rows"] = len(new_df)
+
+        merged_df = storage.load_prices(etf_code, start_dt, end_dt)
+        if merged_df is None or len(merged_df) < requested_days:
+            full_df = self._fetch_history_network(etf_code, calendar_days, start_dt=start_dt, end_dt=end_dt)
+            if full_df is not None and len(full_df) > 0:
+                full_df = self._normalize_history_range(full_df, start_dt, end_dt)
+                storage.save_prices(etf_code, full_df)
+                storage.upsert_meta(etf_code, self.mapper.get_etf_name(etf_code) or "")
+                metadata["new_rows"] = max(metadata["new_rows"], len(full_df))
+                merged_df = storage.load_prices(etf_code, start_dt, end_dt)
+
+        merged_df = self._tail_trading_days(merged_df, requested_days)
+        return (merged_df, metadata) if return_metadata else merged_df
 
     def _history_from_akshare(self, etf_code: str, days: int,
                                start_dt: Optional[date] = None,

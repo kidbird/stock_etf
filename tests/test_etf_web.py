@@ -1,6 +1,6 @@
 import json
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pandas as pd
 
@@ -161,6 +161,44 @@ class ETFWebTests(unittest.TestCase):
         self.assertIsNone(data["backtest"]["profit_factor"])
         self.assertTrue(data["backtest"]["profit_factor_infinite"])
 
+    def test_api_analysis_supports_etf_combo_mode(self):
+        df = self._price_frame(120)
+        combo_result = {
+            "combo": "etf_trend_size",
+            "description": "test",
+            "buy_threshold": 0.3,
+            "sell_threshold": -0.1,
+            "composite_score": 0.45,
+            "factor_values": {"ma_alignment": 0.8},
+            "factor_contributions": {"ma_alignment": 0.2},
+            "backtest": {
+                "total_return": 0.12,
+                "annualized_return": 0.08,
+                "sharpe_ratio": 1.1,
+                "max_drawdown": -0.06,
+                "win_rate": 0.5,
+                "profit_factor": 1.5,
+                "total_trades": 2,
+                "winning_trades": 1,
+                "losing_trades": 1,
+                "equity_curve": pd.DataFrame({"date": df["date"], "equity": [100000 + i for i in range(len(df))]}),
+                "trades": [],
+            },
+        }
+        with app.test_client() as client, \
+             patch("etf_web._fetcher.get_historical_data", side_effect=[df, df]), \
+             patch("etf_web._fetcher.get_fund_profile", return_value={"fund_size": 1e10}), \
+             patch("etf_web._fetcher.get_realtime_quote", return_value={"latest_price": 100.0}), \
+             patch("etf_web.run_combo_analysis", return_value=combo_result), \
+             patch("etf_web.analyze_relative_strength", return_value={"benchmarks": []}), \
+             patch("etf_web.ETFCodeMapper.get_etf_name", return_value="测试ETF"):
+            response = client.get("/api/analysis/510300", query_string={"combo": "etf_trend_size", "days": "120"})
+
+        self.assertEqual(response.status_code, 200)
+        data = response.get_json()
+        self.assertEqual(data["combo_result"]["combo"], "etf_trend_size")
+        self.assertEqual(data["combo_result"]["factor_values"]["ma_alignment"], 0.8)
+
     def test_api_etfs_returns_metadata_fields(self):
         with app.test_client() as client:
             response = client.get("/api/etfs", query_string={"q": "证券", "category": "all"})
@@ -197,6 +235,54 @@ class ETFWebTests(unittest.TestCase):
         data = response.get_json()
         self.assertEqual(data["total"], 1)
         self.assertEqual(data["items"][0]["code"], "510300")
+
+    def test_api_stocks_prefers_live_refresh_when_live_cache_empty(self):
+        with app.test_client() as client, \
+             patch("etf_web.StockCodeMapper._live", {}), \
+             patch("etf_web.StockCodeMapper.load_from_akshare", return_value=2) as mock_load, \
+             patch("etf_web.StockCodeMapper.get_all_codes", return_value=["000001", "300059"]), \
+             patch("etf_web.StockCodeMapper.get_stock_name", side_effect=["平安银行", "东方财富"]), \
+             patch("etf_web.StockCodeMapper.get_stock_industry", side_effect=["银行", "证券"]):
+            response = client.get("/api/stocks")
+
+        self.assertEqual(response.status_code, 200)
+        mock_load.assert_called_once()
+        data = response.get_json()
+        self.assertEqual(data["total"], 2)
+
+    def test_api_stock_analysis_returns_backtest_in_non_combo_mode(self):
+        df = self._price_frame(80)
+        stock_backtest = MagicMock(
+            total_return=0.15,
+            annualized_return=0.10,
+            sharpe_ratio=1.3,
+            max_drawdown=-0.07,
+            win_rate=0.6,
+            profit_factor=1.9,
+            total_trades=3,
+            winning_trades=2,
+            losing_trades=1,
+        )
+        factors = {
+            "rsi": pd.Series([55.0]),
+            "adx": pd.DataFrame({"adx": [23.0]}),
+            "ma_alignment": pd.Series([0.6]),
+        }
+        with app.test_client() as client, \
+             patch("etf_web._stock_fetcher.get_historical_data", side_effect=[df, self._price_frame(80)]), \
+             patch("etf_web._stock_fetcher.get_realtime_quote", return_value={"latest_price": 12.3}), \
+             patch("etf_web._stock_fetcher.get_stock_fundamentals", return_value={"name": "平安银行", "industry": "银行", "market_cap": 3e11, "roe": 12.5}), \
+             patch("etf_web.StockBacktestEngine.run", return_value=stock_backtest), \
+             patch("etf_web._stock_calculator.calculate_all_factors", return_value=factors), \
+             patch("etf_web._stock_calculator.calculate", side_effect=[pd.Series([3e11]), pd.Series([2]), pd.Series([12.5]), pd.Series([18.0])]):
+            response = client.get("/api/stock/analysis/000001", query_string={"strategy": "stock_macd", "days": "80"})
+
+        self.assertEqual(response.status_code, 200)
+        data = response.get_json()
+        self.assertEqual(data["strategy"], "stock_macd")
+        self.assertIn("backtest", data)
+        self.assertEqual(data["backtest"]["total_trades"], 3)
+        self.assertEqual(data["factors"]["industry"], "银行")
 
     def test_api_rotation_rank_sanitizes_inputs_and_returns_items(self):
         ranking = [

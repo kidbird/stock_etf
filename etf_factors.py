@@ -55,6 +55,19 @@ class ReturnFactors:
         close = df['close']
         return (close - close.shift(period)) / close.shift(period) * 100
 
+    @staticmethod
+    def relative_strength(df: pd.DataFrame, benchmark_df: Optional[pd.DataFrame] = None,
+                          period: int = 60) -> pd.Series:
+        if benchmark_df is None or len(benchmark_df) == 0:
+            return pd.Series(np.nan, index=df.index)
+        merged = df[["date", "close"]].merge(
+            benchmark_df[["date", "close"]].rename(columns={"close": "benchmark_close"}),
+            on="date",
+            how="left",
+        )
+        ratio = merged["close"] / merged["benchmark_close"].replace(0, np.nan)
+        return ratio.pct_change(period) * 100
+
 
 # ── 风险类因子 ────────────────────────────────────────────────────────────────
 
@@ -96,6 +109,23 @@ class RiskFactors:
             (low - prev_close).abs(),
         ], axis=1).max(axis=1)
         return tr.ewm(span=period, adjust=False).mean()
+
+    @staticmethod
+    def market_fear(df: pd.DataFrame, benchmark_df: Optional[pd.DataFrame] = None,
+                    window: int = 20) -> pd.Series:
+        base = benchmark_df if benchmark_df is not None and len(benchmark_df) > 0 else df
+        close = base["close"]
+        returns = close.pct_change()
+        volatility = returns.rolling(window=window).std() * np.sqrt(252) * 100
+        drawdown = ((close / close.cummax()) - 1).rolling(window=window, min_periods=1).min().abs() * 100
+        downside = returns.where(returns < 0, 0).rolling(window=window).mean().abs() * 1000
+        fear = volatility.fillna(0) * 0.5 + drawdown.fillna(0) * 0.3 + downside.fillna(0) * 0.2
+        if benchmark_df is not None and len(benchmark_df) > 0:
+            aligned = base[["date"]].copy()
+            aligned["fear"] = fear.values
+            merged = df[["date"]].merge(aligned, on="date", how="left")
+            return merged["fear"]
+        return fear
 
 
 # ── 动量类因子 ────────────────────────────────────────────────────────────────
@@ -455,6 +485,32 @@ class TrendFactors:
             'price_vs_cloud': price_vs_cloud,
         })
 
+    @staticmethod
+    def fund_size(df: pd.DataFrame, fund_size: Optional[float] = None,
+                  metadata: Optional[Dict] = None) -> pd.Series:
+        size = fund_size
+        if size is None and metadata:
+            size = metadata.get("fund_size")
+        value = np.nan if size in (None, "") else float(size)
+        return pd.Series(value, index=df.index, dtype=float)
+
+    @staticmethod
+    def fund_size_percentile(df: pd.DataFrame, fund_size: Optional[float] = None,
+                             metadata: Optional[Dict] = None) -> pd.Series:
+        size = fund_size
+        if size is None and metadata:
+            size = metadata.get("fund_size")
+        if size in (None, ""):
+            value = np.nan
+        else:
+            value = max(0.0, min(100.0, np.log10(max(float(size), 1.0)) / 2 * 100))
+        return pd.Series(value, index=df.index, dtype=float)
+
+    @staticmethod
+    def turnover_liquidity(df: pd.DataFrame, window: int = 20) -> pd.Series:
+        amount = df["close"] * df["volume"]
+        return amount.rolling(window=window, min_periods=5).mean()
+
 
 # ── 因子计算器 ────────────────────────────────────────────────────────────────
 
@@ -469,11 +525,13 @@ class ETFFactorCalculator:
             'annualized_return':        ReturnFactors.annualized_return,
             'monthly_return':           ReturnFactors.monthly_return,
             'roc':                      ReturnFactors.roc,
+            'relative_strength':        ReturnFactors.relative_strength,
             # 风险类
             'volatility':               RiskFactors.volatility,
             'max_drawdown':             RiskFactors.max_drawdown,
             'sharpe_ratio':             RiskFactors.sharpe_ratio,
             'atr':                      RiskFactors.atr,
+            'market_fear':              RiskFactors.market_fear,
             # 动量类
             'rsi':                      MomentumFactors.rsi,
             'macd':                     MomentumFactors.macd,
@@ -492,6 +550,9 @@ class ETFFactorCalculator:
             'keltner_channel':          TrendFactors.keltner_channel,
             'aroon':                    TrendFactors.aroon,
             'ichimoku':                 TrendFactors.ichimoku,
+            'fund_size':                TrendFactors.fund_size,
+            'fund_size_percentile':     TrendFactors.fund_size_percentile,
+            'turnover_liquidity':       TrendFactors.turnover_liquidity,
         }
         for name, func in factors.items():
             FactorRegistry.register(name, func)

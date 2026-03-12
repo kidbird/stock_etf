@@ -17,6 +17,10 @@ from etf_factors import ETFFactorCalculator
 from etf_backtest import ETFBacktestEngine, BacktestConfig
 from etf_advisor import ETFInvestmentAdvisor
 from etf_relative_strength import analyze_relative_strength
+from factor_combo import list_combo_templates, run_combo_analysis
+from stock_data import StockCodeMapper, StockDataFetcher
+from stock_backtest import StockBacktestEngine
+from stock_factors import StockFactorCalculator
 
 app = Flask(__name__)
 
@@ -240,6 +244,33 @@ _fetcher = ETFDataFetcher()
 _calculator = ETFFactorCalculator()
 _engine = ETFBacktestEngine()
 _advisor = ETFInvestmentAdvisor()
+_stock_fetcher = StockDataFetcher()
+_stock_calculator = StockFactorCalculator()
+
+
+def _serialize_combo_result(result: dict) -> dict:
+    backtest = result["backtest"]
+    return {
+        "combo": result["combo"],
+        "description": result["description"],
+        "buy_threshold": result["buy_threshold"],
+        "sell_threshold": result["sell_threshold"],
+        "composite_score": _safe(result["composite_score"]),
+        "factor_values": {key: _safe(value) for key, value in result["factor_values"].items()},
+        "factor_contributions": {key: _safe(value) for key, value in result["factor_contributions"].items()},
+        "backtest": {
+            "total_return": _safe(backtest["total_return"]),
+            "annualized_return": _safe(backtest["annualized_return"]),
+            "sharpe_ratio": _safe(backtest["sharpe_ratio"]),
+            "max_drawdown": _safe(backtest["max_drawdown"]),
+            "win_rate": _safe(backtest["win_rate"]),
+            "profit_factor": None if backtest["profit_factor"] == float("inf") else _safe(backtest["profit_factor"]),
+            "profit_factor_infinite": backtest["profit_factor"] == float("inf"),
+            "total_trades": backtest["total_trades"],
+            "winning_trades": backtest["winning_trades"],
+            "losing_trades": backtest["losing_trades"],
+        },
+    }
 
 
 # ── API: ETF 列表 / 搜索 ──────────────────────────────────────────────────────
@@ -342,12 +373,38 @@ def api_history(code):
 @app.route('/api/analysis/<code>')
 def api_analysis(code):
     strategy = request.args.get('strategy', 'macd')
+    combo = request.args.get('combo', '').strip()
     days     = int(request.args.get('days', 500))
     params   = _parse_strategy_params(strategy)
 
     mapper = ETFCodeMapper()
     metadata = mapper.get_etf_metadata(code)
     etf_name = metadata.get('name') or '未知ETF'
+
+    if combo:
+        df = _fetcher.get_historical_data(code, days=days)
+        if df is None or len(df) < 30:
+            return jsonify({'error': '历史数据不足，请先运行 --download'}), 400
+        benchmark_df = _fetcher.get_historical_data("510300", days=max(days, 320))
+        combo_result = run_combo_analysis(
+            "etf",
+            code,
+            df,
+            metadata=_fetcher.get_fund_profile(code),
+            combo_name=combo,
+            benchmark_df=benchmark_df,
+        )
+        relative_strength = analyze_relative_strength(_fetcher, code, etf_name=etf_name, days=320)
+        return jsonify({
+            'code': code,
+            'name': etf_name,
+            'metadata': metadata,
+            'quote': _fetcher.get_realtime_quote(code),
+            'strategy': None,
+            'combo_result': _serialize_combo_result(combo_result),
+            'relative_strength': relative_strength,
+            'days': days,
+        })
 
     # ── 历史数据 ──────────────────────────────────────────────
     df = _fetcher.get_historical_data(code, days=days)
@@ -472,6 +529,116 @@ def api_analysis(code):
         'strategy': strategy,
         'params':   params,
         'days':     days,
+    })
+
+
+@app.route('/api/etf/combo-templates')
+def api_etf_combo_templates():
+    return jsonify({'items': list_combo_templates("etf")})
+
+
+@app.route('/api/stock/combo-templates')
+def api_stock_combo_templates():
+    return jsonify({'items': list_combo_templates("stock")})
+
+
+@app.route('/api/stocks')
+def api_stocks():
+    q = request.args.get('q', '').strip().lower()
+    mapper = StockCodeMapper()
+    if not StockCodeMapper._live:
+        mapper.load_from_akshare()
+    items = []
+    for code in mapper.get_all_codes():
+        name = mapper.get_stock_name(code) or ''
+        industry = mapper.get_stock_industry(code)
+        if q and q not in code.lower() and q not in name.lower() and q not in industry.lower():
+            continue
+        items.append({'code': code, 'name': name, 'industry': industry})
+    return jsonify({'total': len(items), 'stocks': items[:200]})
+
+
+@app.route('/api/stock/analysis/<code>')
+def api_stock_analysis(code):
+    combo = request.args.get('combo', '').strip()
+    strategy = request.args.get('strategy', 'stock_rsi')
+    days = int(request.args.get('days', 500))
+    df = _stock_fetcher.get_historical_data(code, days=days)
+    if df is None or len(df) < 30:
+        return jsonify({'error': '股票历史数据不足'}), 400
+
+    quote = _stock_fetcher.get_realtime_quote(code)
+    fundamentals = _stock_fetcher.get_stock_fundamentals(code)
+    metadata = {
+        'code': code,
+        'name': fundamentals.get('name') or _stock_fetcher.mapper.get_stock_name(code) or code,
+        'industry': fundamentals.get('industry', '未知'),
+    }
+
+    if combo:
+        benchmark_df = _fetcher.get_historical_data("510300", days=max(days, 320))
+        combo_result = run_combo_analysis(
+            "stock",
+            code,
+            df,
+            metadata=fundamentals,
+            combo_name=combo,
+            benchmark_df=benchmark_df,
+            fundamentals=fundamentals,
+        )
+        return jsonify({
+            'code': code,
+            'name': metadata['name'],
+            'metadata': metadata,
+            'quote': quote,
+            'fundamentals': fundamentals,
+            'combo_result': _serialize_combo_result(combo_result),
+            'days': days,
+        })
+
+    try:
+        backtest_result = StockBacktestEngine().run(df, strategy, {})
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 400
+
+    factors = _stock_calculator.calculate_all_factors(df)
+    factor_payload = {
+        'rsi': _safe(factors['rsi'].iloc[-1]) if len(factors['rsi']) else None,
+        'adx': _safe(factors['adx']['adx'].iloc[-1]) if len(factors['adx']) else None,
+        'ma_alignment': _safe(factors['ma_alignment'].iloc[-1]) if len(factors['ma_alignment']) else None,
+        'market_cap': _safe(_stock_calculator.calculate(df, 'market_cap', fundamentals=fundamentals).iloc[-1]),
+        'market_cap_bucket': _safe(_stock_calculator.calculate(df, 'market_cap_bucket', fundamentals=fundamentals).iloc[-1]),
+        'roe': _safe(_stock_calculator.calculate(df, 'roe', fundamentals=fundamentals).iloc[-1]),
+        'industry': fundamentals.get('industry'),
+        'market_fear': _safe(
+            _stock_calculator.calculate(
+                df,
+                'market_fear',
+                benchmark_df=_fetcher.get_historical_data("510300", days=max(days, 320)),
+            ).iloc[-1]
+        ),
+    }
+    return jsonify({
+        'code': code,
+        'name': metadata['name'],
+        'metadata': metadata,
+        'quote': quote,
+        'strategy': strategy,
+        'fundamentals': fundamentals,
+        'backtest': {
+            'total_return': _safe(backtest_result.total_return),
+            'annualized_return': _safe(backtest_result.annualized_return),
+            'sharpe_ratio': _safe(backtest_result.sharpe_ratio),
+            'max_drawdown': _safe(backtest_result.max_drawdown),
+            'win_rate': _safe(backtest_result.win_rate),
+            'profit_factor': None if backtest_result.profit_factor == float('inf') else _safe(backtest_result.profit_factor),
+            'profit_factor_infinite': backtest_result.profit_factor == float('inf'),
+            'total_trades': backtest_result.total_trades,
+            'winning_trades': backtest_result.winning_trades,
+            'losing_trades': backtest_result.losing_trades,
+        },
+        'factors': factor_payload,
+        'days': days,
     })
 
 

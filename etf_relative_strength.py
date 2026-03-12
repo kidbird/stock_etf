@@ -14,6 +14,8 @@ BENCHMARK_ETFS = [
     {"key": "zz1000", "code": "512100", "name": "中证1000ETF"},
 ]
 
+WINDOW_PERIODS = (20, 60, 120, 250)
+
 CYCLICAL_KEYWORDS = (
     "煤炭", "钢铁", "有色", "证券", "银行", "地产", "房地产",
     "建材", "化工", "能源", "油气", "资源", "周期", "机械",
@@ -34,7 +36,7 @@ def _calc_pair_strength(target_df: pd.DataFrame, bench_df: pd.DataFrame,
         on="date",
         how="inner",
     )
-    if len(merged) < 61:
+    if len(merged) < min(WINDOW_PERIODS) + 1:
         return {
             "code": benchmark["code"],
             "name": benchmark["name"],
@@ -42,6 +44,8 @@ def _calc_pair_strength(target_df: pd.DataFrame, bench_df: pd.DataFrame,
             "color": "yellow",
             "excess_return_20": None,
             "excess_return_60": None,
+            "excess_return_120": None,
+            "excess_return_250": None,
             "relative_momentum_20": None,
             "relative_momentum_60": None,
             "reason": "历史重叠样本不足",
@@ -54,15 +58,18 @@ def _calc_pair_strength(target_df: pd.DataFrame, bench_df: pd.DataFrame,
     target_ret_20 = _pct_change(target_close, 20)
     target_ret_60 = _pct_change(target_close, 60)
     target_ret_120 = _pct_change(target_close, 120)
+    target_ret_250 = _pct_change(target_close, 250)
     bench_ret_20 = _pct_change(bench_close, 20)
     bench_ret_60 = _pct_change(bench_close, 60)
     bench_ret_120 = _pct_change(bench_close, 120)
+    bench_ret_250 = _pct_change(bench_close, 250)
     rel_mom_20 = _pct_change(ratio, 20)
     rel_mom_60 = _pct_change(ratio, 60)
 
     excess_20 = None if target_ret_20 is None or bench_ret_20 is None else target_ret_20 - bench_ret_20
     excess_60 = None if target_ret_60 is None or bench_ret_60 is None else target_ret_60 - bench_ret_60
     excess_120 = None if target_ret_120 is None or bench_ret_120 is None else target_ret_120 - bench_ret_120
+    excess_250 = None if target_ret_250 is None or bench_ret_250 is None else target_ret_250 - bench_ret_250
 
     if is_self:
         return {
@@ -73,6 +80,7 @@ def _calc_pair_strength(target_df: pd.DataFrame, bench_df: pd.DataFrame,
             "excess_return_20": 0.0,
             "excess_return_60": 0.0,
             "excess_return_120": 0.0,
+            "excess_return_250": 0.0,
             "relative_momentum_20": 0.0,
             "relative_momentum_60": 0.0,
             "reason": "当前 ETF 即该基准代理",
@@ -109,6 +117,8 @@ def _calc_pair_strength(target_df: pd.DataFrame, bench_df: pd.DataFrame,
         reasons.append(f"60日超额 {excess_60:+.2f}%")
     if excess_120 is not None:
         reasons.append(f"120日超额 {excess_120:+.2f}%")
+    if excess_250 is not None:
+        reasons.append(f"250日超额 {excess_250:+.2f}%")
     if rel_mom_20 is not None:
         reasons.append(f"相对动量 {rel_mom_20:+.2f}%")
 
@@ -120,6 +130,7 @@ def _calc_pair_strength(target_df: pd.DataFrame, bench_df: pd.DataFrame,
         "excess_return_20": excess_20,
         "excess_return_60": excess_60,
         "excess_return_120": excess_120,
+        "excess_return_250": excess_250,
         "relative_momentum_20": rel_mom_20,
         "relative_momentum_60": rel_mom_60,
         "reason": "，".join(reasons[:3]) if reasons else "暂无明显超额特征",
@@ -239,7 +250,7 @@ def _build_relative_history(target_df: pd.DataFrame, benchmark_frames: List[Dict
 def _build_window_summary(comparisons: List[Dict]) -> Dict:
     valid = [c for c in comparisons if c["status"] != "基准"]
     windows = {}
-    for period in (20, 60, 120):
+    for period in WINDOW_PERIODS:
         key = f"excess_return_{period}"
         values = [c.get(key) for c in valid if c.get(key) is not None]
         avg = sum(values) / len(values) if values else None
@@ -281,6 +292,7 @@ def analyze_relative_strength(fetcher, etf_code: str, etf_name: str = "", days: 
                 "excess_return_20": None,
                 "excess_return_60": None,
                 "excess_return_120": None,
+                "excess_return_250": None,
                 "relative_momentum_20": None,
                 "relative_momentum_60": None,
                 "reason": "基准数据不足",
