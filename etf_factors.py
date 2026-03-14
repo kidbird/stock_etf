@@ -511,6 +511,304 @@ class TrendFactors:
         amount = df["close"] * df["volume"]
         return amount.rolling(window=window, min_periods=5).mean()
 
+    @staticmethod
+    def fresh_52w_breakout(
+        df: pd.DataFrame,
+        lookback: int = 252,
+        freshness_window: int = 20,
+        near_high_threshold: float = 0.03,
+        min_periods: int = 120,
+    ) -> pd.Series:
+        """
+        近一年刚创新高的“新鲜度”得分。
+
+        逻辑：
+        1. 用前 lookback 个交易日（不含当日）的最高收盘价定义“前高”。
+        2. 当日收盘价突破前高，视为一次新高突破事件。
+        3. 仅当最近 freshness_window 日内发生过突破，且当前价格仍接近近一年高点，
+           才给出正分；突破太久未再创新高则分数衰减为 0。
+        """
+        close = pd.to_numeric(df["close"], errors="coerce")
+        prior_high = close.shift(1).rolling(window=lookback, min_periods=min_periods).max()
+        rolling_high = close.rolling(window=lookback, min_periods=min_periods).max()
+        breakout = close > prior_high
+
+        last_breakout_index = pd.Series(np.nan, index=df.index, dtype=float)
+        last_idx = np.nan
+        for i, flag in enumerate(breakout.fillna(False)):
+            if flag:
+                last_idx = float(i)
+            last_breakout_index.iloc[i] = last_idx
+
+        age = pd.Series(df.index, index=df.index, dtype=float) - last_breakout_index
+        freshness = 1 - (age / max(freshness_window, 1))
+        freshness = freshness.clip(lower=0, upper=1).fillna(0)
+
+        distance_from_high = (rolling_high - close) / rolling_high.replace(0, np.nan)
+        still_near_high = (distance_from_high <= near_high_threshold).astype(float).fillna(0)
+
+        return (freshness * still_near_high).fillna(0)
+
+
+# ── 突破类因子 ────────────────────────────────────────────────────────────────
+
+class BreakoutFactors:
+    @staticmethod
+    def new_high_breakout(
+        df: pd.DataFrame,
+        lookback: int = 252,
+        min_periods: int = 120,
+    ) -> pd.DataFrame:
+        """
+        52周(一年)新高突破因子 - 首次突破一年最高点
+
+        检测价格是否首次突破过去N个交易日的最高点。
+        只有当收盘价创下过去252个交易日的最高价时，才算真正的新高突破。
+
+        参数:
+            lookback: 回溯期（交易日），默认252（一年）
+            min_periods: 最小计算期，避免数据不足时误差
+
+        返回:
+            DataFrame 包含:
+            - breakout: 0-1 信号，1表示当日首次突破一年新高
+            - distance_pct: 距离一年高点的百分比
+            - at_high: 是否处于一年最高点
+        """
+        close = pd.to_numeric(df["close"], errors="coerce")
+
+        n = len(close)
+        result = pd.DataFrame(index=df.index)
+        result["breakout"] = 0
+        result["distance_pct"] = 0.0
+        result["at_high"] = 0
+
+        # 计算滚动最高价（过去lookback天的最高收盘价）
+        rolling_max = close.rolling(window=lookback, min_periods=min_periods).max()
+
+        # 当前位置是否处于一年最高点（收盘价 = 过去252天的最高价）
+        at_high = (close >= rolling_max) & rolling_max.notna()
+
+        # 首次突破信号：当日是一年新高，且前一天不是
+        prev_at_high = at_high.shift(1).fillna(False)
+        first_breakout = at_high & (~prev_at_high)
+
+        # 计算距离一年高点的百分比
+        distance = (rolling_max - close) / rolling_max.replace(0, np.nan) * 100
+
+        # 填充结果
+        result["breakout"] = first_breakout.astype(int)
+        result["distance_pct"] = distance.fillna(0)
+        result["at_high"] = at_high.astype(int)
+
+        return result
+
+
+# ── 形态类因子 ────────────────────────────────────────────────────────────────
+
+class PatternFactors:
+    @staticmethod
+    def cup_and_handle(
+        df: pd.DataFrame,
+        cup_window: int = 30,
+        handle_window: int = 8,
+        min_cup_depth: float = 0.05,
+        max_cup_depth: float = 0.50,
+        handle_retrace: float = 0.30,
+    ) -> pd.DataFrame:
+        """
+        杯柄形态检测 (Cup and Handle Pattern) - 支持日线/周线
+
+        经典技术分析形态，由William O'Neil提出：
+        - 杯部：U形或圆弧底，左侧下跌后右侧上涨
+        - 柄部：杯部右侧的小幅回调，通常向下倾斜5-15%
+
+        参数:
+            cup_window: 杯部检测窗口 (根数，建议日线30/周线15)
+            handle_window: 柄部检测窗口 (建议日线8/周线4)
+            min_cup_depth: 杯部最小深度 (相对杯口跌幅比例)
+            max_cup_depth: 杯部最大深度
+            handle_retrace: 柄部最大回撤幅度
+
+        返回:
+            DataFrame 包含:
+            - cup_and_handle: 0-1 之间的形态匹配度分数
+            - status: 状态码 0=无形态 1=杯部形成中 2=柄部形成中 3=突破前夕 4=刚刚突破
+            - phase: 状态描述
+        """
+        close = pd.to_numeric(df["close"], errors="coerce")
+        high = pd.to_numeric(df.get("high", close), errors="coerce")
+        low = pd.to_numeric(df.get("low", close), errors="coerce")
+        volume = pd.to_numeric(df.get("volume", pd.Series(1, index=df.index)), errors="coerce")
+
+        n = len(close)
+        result = pd.DataFrame(index=df.index)
+        result["cup_and_handle"] = 0.0
+        result["status"] = 0
+        result["phase"] = "无形态"
+
+        # 移动窗口检测
+        for i in range(cup_window + handle_window + 5, n):
+            cup_start = i - cup_window - handle_window
+            cup_end = i - handle_window
+            handle_start = cup_end
+
+            cup_prices = close.iloc[cup_start:cup_end].values
+            handle_prices = close.iloc[handle_start:i].values
+
+            if len(cup_prices) < 10 or len(handle_prices) < 3:
+                continue
+
+            # 找到杯部的最低点
+            cup_min_idx = np.argmin(cup_prices)
+            cup_min = cup_prices[cup_min_idx]
+
+            # 左杯口: 最低点之前的最高价
+            left_cup = cup_prices[:cup_min_idx] if cup_min_idx > 0 else []
+            left_peak = np.max(left_cup) if len(left_cup) > 1 else cup_prices[0]
+
+            # 右杯口: 最低点之后的最高价
+            right_cup = cup_prices[cup_min_idx:] if cup_min_idx < len(cup_prices) else []
+            right_peak = np.max(right_cup) if len(right_cup) > 1 else cup_prices[-1]
+
+            # 杯部深度
+            cup_depth = (left_peak - cup_min) / left_peak if left_peak > 0 else 0
+
+            # 杯部形态条件
+            if not (min_cup_depth <= cup_depth <= max_cup_depth):
+                continue
+
+            # 右杯口不应该明显低于左杯口
+            if right_peak < left_peak * 0.88:
+                continue
+
+            # 柄部分析
+            handle_high = np.max(handle_prices)
+            handle_low = np.min(handle_prices)
+            handle_retrace_actual = (handle_high - handle_low) / handle_high if handle_high > 0 else 0
+
+            # 柄部条件: 小幅回调，在杯口下方运行
+            if not (handle_retrace_actual <= handle_retrace and handle_low > cup_min):
+                continue
+
+            # 成交量萎缩（可选）
+            cup_vol = np.mean(volume.iloc[cup_start:cup_end].values)
+            handle_vol = np.mean(volume.iloc[handle_start:i].values) if len(volume.iloc[handle_start:i]) > 0 else cup_vol
+            volume_ok = handle_vol < cup_vol * 1.5 if cup_vol > 0 else True
+
+            # 计算形态匹配分数
+            # 1. 杯部深度合理性 (0-0.4)
+            ideal_depth = 0.20
+            depth_score = max(0, 1 - abs(cup_depth - ideal_depth) / ideal_depth) * 0.4
+
+            # 2. 右杯口高度 (0-0.3)
+            right_cup_score = min(0.3, (right_peak / left_peak) * 0.3) if left_peak > 0 else 0
+
+            # 3. 柄部强度 (0-0.2)
+            handle_score = max(0, (1 - handle_retrace_actual / handle_retrace)) * 0.2
+
+            # 4. 成交量萎缩 (0-0.1)
+            vol_score = max(0, (1 - handle_vol / cup_vol)) * 0.1 if cup_vol > 0 and volume_ok else 0
+
+            total_score = min(1.0, depth_score + right_cup_score + handle_score + vol_score)
+
+            # 当前状态判断
+            current_price = close.iloc[i - 1]
+
+            # 状态判断逻辑
+            if current_price < right_peak * 0.90:
+                # 还在杯部
+                status = 1
+                phase = "杯部形成"
+            elif current_price < right_peak * 0.97:
+                # 接近右杯口，柄部形成中
+                status = 2
+                phase = "柄部形成"
+            elif current_price < handle_high:
+                # 接近或略低于柄高点，突破前夕
+                status = 3
+                phase = "突破前夕"
+            else:
+                # 已经突破柄部高点
+                status = 4
+                phase = "刚刚突破"
+
+            result.iloc[i, result.columns.get_loc("cup_and_handle")] = total_score
+            result.iloc[i, result.columns.get_loc("status")] = status
+            result.iloc[i, result.columns.get_loc("phase")] = phase
+
+        return result
+
+    @staticmethod
+    def cup_and_handle_weekly(
+        df: pd.DataFrame,
+        cup_weeks: int = 20,
+        handle_weeks: int = 5,
+        min_cup_depth: float = 0.08,
+        max_cup_depth: float = 0.50,
+        handle_retrace: float = 0.35,
+    ) -> pd.DataFrame:
+        """
+        杯柄形态检测 - 周线专用版本
+
+        参数:
+            cup_weeks: 杯部检测周数
+            handle_weeks: 柄部检测周数
+            min_cup_depth: 杯部最小深度
+            max_cup_depth: 杯部最大深度
+            handle_retrace: 柄部最大回撤幅度
+
+        返回:
+            DataFrame 包含:
+            - cup_and_handle: 形态匹配度分数
+            - status: 状态码
+            - phase: 状态描述
+        """
+        # 转换为周线
+        df_weekly = PatternFactors._convert_to_weekly(df)
+        if df_weekly is None or len(df_weekly) < cup_weeks + handle_weeks + 5:
+            return pd.DataFrame({
+                "cup_and_handle": [],
+                "status": [],
+                "phase": []
+            })
+
+        # 调用主函数
+        return PatternFactors.cup_and_handle(
+            df_weekly,
+            cup_window=cup_weeks,
+            handle_window=handle_weeks,
+            min_cup_depth=min_cup_depth,
+            max_cup_depth=max_cup_depth,
+            handle_retrace=handle_retrace,
+        )
+
+    @staticmethod
+    def _convert_to_weekly(df: pd.DataFrame) -> pd.DataFrame:
+        """将日线数据转换为周线数据"""
+        if "date" not in df.columns:
+            return None
+
+        df = df.copy()
+        df["date"] = pd.to_datetime(df["date"])
+        df = df.set_index("date").sort_index()
+
+        # 周线聚合
+        weekly = df.resample("W").agg({
+            "open": "first",
+            "high": "max",
+            "low": "min",
+            "close": "last",
+            "volume": "sum"
+        })
+
+        # 删除全NaN行
+        weekly = weekly.dropna(how="all")
+        weekly = weekly.reset_index()
+        weekly = weekly.rename(columns={"date": "date"})
+
+        return weekly
+
 
 # ── 因子计算器 ────────────────────────────────────────────────────────────────
 
@@ -553,6 +851,12 @@ class ETFFactorCalculator:
             'fund_size':                TrendFactors.fund_size,
             'fund_size_percentile':     TrendFactors.fund_size_percentile,
             'turnover_liquidity':       TrendFactors.turnover_liquidity,
+            'fresh_52w_breakout':       TrendFactors.fresh_52w_breakout,
+            # 突破类
+            'new_high_breakout':        BreakoutFactors.new_high_breakout,
+            # 形态类
+            'cup_and_handle':           PatternFactors.cup_and_handle,
+            'cup_and_handle_weekly':    PatternFactors.cup_and_handle_weekly,
         }
         for name, func in factors.items():
             FactorRegistry.register(name, func)

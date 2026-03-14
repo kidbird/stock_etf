@@ -8,6 +8,7 @@ import requests
 import pandas as pd
 import time
 import csv
+import os
 from datetime import date, datetime, timedelta
 from typing import Dict, List, Optional, Any
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -31,6 +32,69 @@ logger = logging.getLogger(__name__)
 
 # ── 兼容旧逻辑的常量 ──────────────────────────────────────────────────────────
 _WIDE_BASIS_PREFIXES = ("510", "588", "159")
+
+
+def load_history_csv(path: str, days: Optional[int] = None) -> pd.DataFrame:
+    """
+    读取本地历史交易 CSV，并标准化为统一字段：
+    date/open/high/low/close/volume
+    """
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"CSV 文件不存在: {path}")
+
+    df = pd.read_csv(path)
+    if df is None or len(df) == 0:
+        raise ValueError("CSV 文件为空")
+
+    rename_map = {
+        "日期": "date",
+        "交易日期": "date",
+        "date": "date",
+        "Date": "date",
+        "开盘": "open",
+        "开盘价": "open",
+        "open": "open",
+        "Open": "open",
+        "最高": "high",
+        "最高价": "high",
+        "high": "high",
+        "High": "high",
+        "最低": "low",
+        "最低价": "low",
+        "low": "low",
+        "Low": "low",
+        "收盘": "close",
+        "收盘价": "close",
+        "close": "close",
+        "Close": "close",
+        "成交量": "volume",
+        "成交量(手)": "volume",
+        "volume": "volume",
+        "Volume": "volume",
+    }
+    df = df.rename(columns={col: rename_map[col] for col in df.columns if col in rename_map})
+
+    required = ["date", "open", "high", "low", "close"]
+    missing = [col for col in required if col not in df.columns]
+    if missing:
+        raise ValueError(f"CSV 缺少必要列: {', '.join(missing)}")
+
+    if "volume" not in df.columns:
+        df["volume"] = 0.0
+
+    out = df[["date", "open", "high", "low", "close", "volume"]].copy()
+    out["date"] = pd.to_datetime(out["date"], errors="coerce")
+    for col in ["open", "high", "low", "close", "volume"]:
+        out[col] = pd.to_numeric(out[col], errors="coerce")
+
+    out = out.dropna(subset=["date", "open", "high", "low", "close"])
+    out = out.sort_values("date").drop_duplicates(subset=["date"]).reset_index(drop=True)
+    if len(out) == 0:
+        raise ValueError("CSV 标准化后无有效数据")
+
+    if days is not None and days > 0:
+        out = out.tail(days).reset_index(drop=True)
+    return out
 
 
 # ── 内存缓存 ──────────────────────────────────────────────────────────────────

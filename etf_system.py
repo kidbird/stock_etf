@@ -7,8 +7,10 @@ import logging
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from pathlib import Path
 
-from etf_data import ETFDataFetcher, ETFCodeMapper, _get_storage
+from etf_data import ETFDataFetcher, ETFCodeMapper, _get_storage, load_history_csv
+from all_etf_codes import ETF_CODES
 from etf_factors import ETFFactorCalculator
 from etf_backtest import ETFBacktestEngine, BacktestConfig
 from etf_advisor import get_investment_advice, format_advice
@@ -121,12 +123,20 @@ class ETFAnalysisSystem:
             return None
         return self.backtest_engine.run(df, strategy, params)
 
-    def analyze_factor_combo(self, etf_code: str, combo_name: str, days: int = 500):
-        df = self.data_fetcher.get_historical_data(etf_code, days)
+    def analyze_factor_combo(
+        self,
+        etf_code: str,
+        combo_name: str,
+        days: int = 500,
+        df=None,
+        metadata: dict = None,
+    ):
+        if df is None:
+            df = self.data_fetcher.get_historical_data(etf_code, days)
         if df is None or len(df) < 30:
             return None
         benchmark_df = self.data_fetcher.get_historical_data("510300", max(days, 320))
-        metadata = self.data_fetcher.get_fund_profile(etf_code)
+        metadata = metadata or self.data_fetcher.get_fund_profile(etf_code)
         return run_combo_analysis(
             "etf",
             etf_code,
@@ -379,6 +389,12 @@ def main():
                                  'trend_filter_macd', 'supertrend_follow', 'donchian_breakout'])
     parser.add_argument('--combo', type=str, choices=list_combo_templates("etf"),
                         help='多因子组合名称')
+    parser.add_argument('--cup-handle', action='store_true',
+                        help='分析杯柄形态（支持日线/周线）')
+    parser.add_argument('--weekly', action='store_true',
+                        help='使用周线数据进行分析（配合--cup-handle使用）')
+    parser.add_argument('--csv-path', type=str,
+                        help='本地历史交易CSV路径，列名支持 date/open/high/low/close/volume 或常见中文别名')
     parser.add_argument('--list-combos', action='store_true', help='列出ETF多因子组合模板')
     parser.add_argument('--list-factors', action='store_true', help='列出ETF可用因子')
     parser.add_argument('--list', '-l', action='store_true', help='列出所有ETF')
@@ -479,6 +495,34 @@ def main():
         )
         print(format_rotation_ranking(ranked, rs_window=args.rs_window, category=args.rotation_category))
 
+    elif args.combo and args.csv_path:
+        try:
+            csv_df = load_history_csv(args.csv_path, days=args.days)
+        except Exception as exc:
+            print(f"CSV 读取失败: {exc}")
+            return
+        code = args.code or Path(args.csv_path).stem
+        result = system.analyze_factor_combo(
+            code,
+            args.combo,
+            days=args.days,
+            df=csv_df,
+            metadata={"name": code, "source": "csv"},
+        )
+        if not result:
+            print("CSV 多因子组合分析失败：历史数据不足")
+            return
+        print(f"标的: {code}")
+        print(f"数据源: {args.csv_path}")
+        print(f"组合: {result['combo']} - {result['description']}")
+        print(f"综合得分: {result['composite_score']:.2f}")
+        print(f"总收益率: {result['backtest']['total_return']*100:.2f}%")
+        print(f"年化收益率: {result['backtest']['annualized_return']*100:.2f}%")
+        print(f"夏普比率: {result['backtest']['sharpe_ratio']:.2f}")
+        print("因子值:")
+        for key, value in result["factor_values"].items():
+            print(f"  {key}: {value}")
+
     elif args.code and args.combo:
         result = system.analyze_factor_combo(args.code, args.combo, days=args.days)
         if not result:
@@ -493,6 +537,58 @@ def main():
         print("因子值:")
         for key, value in result["factor_values"].items():
             print(f"  {key}: {value}")
+
+    # 杯柄形态分析
+    elif args.cup_handle:
+        # 获取数据
+        if args.csv_path:
+            df = load_history_csv(args.csv_path, days=args.days)
+            code = Path(args.csv_path).stem
+        elif args.code:
+            df = system.data_fetcher.get_historical_data(args.code, days=args.days)
+            code = args.code
+            if args.code in ETF_CODES:
+                code = f"{args.code} {ETF_CODES[args.code]}"
+        else:
+            print("错误: 请指定 --code 或 --csv-path")
+            return
+
+        if df is None or len(df) < 60:
+            print("数据不足，无法进行杯柄形态分析")
+            return
+
+        # 选择因子
+        factor_name = "cup_and_handle_weekly" if args.weekly else "cup_and_handle"
+
+        # 计算因子
+        result = system.factor_calculator.calculate(df, factor_name)
+        scored = result[result["cup_and_handle"] > 0.3]
+
+        print(f"\n{'='*60}")
+        print(f"标的: {code}")
+        print(f"数据: {'周线' if args.weekly else '日线'} ({len(df)} {'周' if args.weekly else '日'})")
+        print(f"{'='*60}\n")
+
+        if len(scored) == 0:
+            print("未检测到杯柄形态")
+        else:
+            # 按分数排序，取最高的
+            latest = scored.tail(5)
+            print(f"检测到 {len(scored)} 个杯柄形态，最近5个:\n")
+            print(f"{'日期':<12} {'分数':<8} {'状态':<12} {'描述'}")
+            print("-" * 60)
+            for idx, row in latest.iterrows():
+                date_str = str(df.loc[idx, "date"])[:10] if "date" in df.columns else str(idx)
+                print(f"{date_str:<12} {row['cup_and_handle']:.2f}   {row['status']}       {row['phase']}")
+
+            # 当前最新状态
+            latest_row = result.iloc[-1]
+            print(f"\n当前状态: {latest_row['phase']}")
+            print(f"当前分数: {latest_row['cup_and_handle']:.2f}")
+
+            # 突破前夕或刚刚突破的信号
+            if latest_row["status"] >= 3:
+                print("\n信号: 处于突破前夕或刚刚突破状态，可关注！")
 
     elif args.code:
         system.full_analysis(args.code, args.strategy, rs_window=args.rs_window, days=args.days)

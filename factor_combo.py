@@ -59,6 +59,45 @@ ETF_COMBOS: Dict[str, ComboTemplate] = {
             FactorSpec("market_fear", 0.15, scorer="fear_inverse"),
         ],
     ),
+    "etf_fresh_high": ComboTemplate(
+        name="etf_fresh_high",
+        universe_type="etf",
+        description="近一年刚创新高 + 趋势确认",
+        buy_threshold=0.35,
+        sell_threshold=0.00,
+        factors=[
+            FactorSpec("fresh_52w_breakout", 0.45),
+            FactorSpec("ma_alignment", 0.25, scorer="alignment"),
+            FactorSpec("roc", 0.15, {"period": 20}, scorer="roc"),
+            FactorSpec("turnover_liquidity", 0.15, scorer="zscore"),
+        ],
+    ),
+    "etf_cup_handle": ComboTemplate(
+        name="etf_cup_handle",
+        universe_type="etf",
+        description="杯柄形态突破 + 趋势确认",
+        buy_threshold=0.35,
+        sell_threshold=0.00,
+        factors=[
+            FactorSpec("cup_and_handle", 0.40, scorer="pattern"),
+            FactorSpec("ma_alignment", 0.25, scorer="alignment"),
+            FactorSpec("roc", 0.20, {"period": 20}, scorer="roc"),
+            FactorSpec("turnover_liquidity", 0.15, scorer="zscore"),
+        ],
+    ),
+    "etf_breakout": ComboTemplate(
+        name="etf_breakout",
+        universe_type="etf",
+        description="52周新高突破 + 动量确认",
+        buy_threshold=0.35,
+        sell_threshold=0.00,
+        factors=[
+            FactorSpec("new_high_breakout", 0.40, scorer="breakout"),
+            FactorSpec("fresh_52w_breakout", 0.25),
+            FactorSpec("ma_alignment", 0.20, scorer="alignment"),
+            FactorSpec("roc", 0.15, {"period": 20}, scorer="roc"),
+        ],
+    ),
 }
 
 
@@ -131,6 +170,10 @@ def _ensure_series(df: pd.DataFrame, value: Any) -> pd.Series:
             return value["adx"]
         if "trend" in value.columns:
             return value["trend"]
+        if "cup_and_handle" in value.columns:
+            return value["cup_and_handle"]
+        if "breakout" in value.columns:
+            return value["breakout"]
         return value.iloc[:, 0]
     if isinstance(value, pd.Series):
         return value
@@ -161,6 +204,12 @@ def _score_series(series: pd.Series, scorer: str) -> pd.Series:
     if scorer == "industry":
         mapped = series.map(lambda value: INDUSTRY_SCORE_MAP.get(value, 0.0))
         return mapped.astype(float).clip(-1, 1).fillna(0)
+    if scorer == "pattern":
+        # 形态因子直接使用原始分数 (0-1)
+        return pd.to_numeric(series, errors="coerce").clip(0, 1).fillna(0)
+    if scorer == "breakout":
+        # 突破因子直接使用原始信号 (0或1)
+        return pd.to_numeric(series, errors="coerce").clip(0, 1).fillna(0)
     return pd.to_numeric(series, errors="coerce").clip(-1, 1).fillna(0)
 
 
